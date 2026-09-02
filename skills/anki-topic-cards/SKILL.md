@@ -137,6 +137,11 @@ back in front of them.
 anki-vocab:text_check(sentences=[...], targets=[<the words being taught>])
 ```
 
+A deck-03 sentence carrying one deliberate new word comes back `ok` — one new
+word is always within the allowance — and that word shows up in the `new words`
+line. That line is how you verify the dose (see **Introducing new words on
+purpose** below) was actually kept: count it before writing.
+
 Always pass `targets`: those words are new by definition and must not count against coverage. Rewrite whatever comes back `low`, leaning on the palette, then check again. **Two rounds maximum** — then report what is left rather than grinding further.
 
 ### If `anki-vocab` is unavailable
@@ -187,46 +192,54 @@ Prefer words the learner already knows — that is what `vocab_pool` is for, not
 - **Never contort a sentence to hit the number.** A natural A2 sentence with two new words beats an awkward one with none. The target is a preference, not a constraint.
 - The new words are whatever the last `text_check` listed after `new words` — that line, and only that line, goes into the final report under «кандидаты в следующую тему». Never add words you _think_ are new: `text_check` checks the whole collection, you see one filtered slice of it, and a word you'd guess at may already have 75 cards.
 
-## When the user has no word list of their own
+## Introducing new words on purpose (the deck-03 dose)
 
-Sometimes the request is «нужны слова, придумай сам». Don't invent from a
-frequency list — the learner has a backlog of their own:
+Grounding has a failure mode of its own: sentences built strictly from words
+the learner already has teach nothing beyond the target word. Measured on this
+collection, the topic `14. Riidepoes` introduced **2** new words across 65
+notes, and `11. Lähme välja` introduced none at all. At that rate the learner's
+vocabulary only ever grows by the words they explicitly ask for, and every
+topic reads as a recombination of the previous ones.
 
-```
-anki-vocab:vocab_debt()
-```
+So put new words into the **deck-03 sentence** — the one the learner translates
+from Russian. Yes, that means the first review of that card may well be a
+miss: the learner knows this, has chosen it deliberately, and the dose below is
+what keeps it from becoming frustrating. Do not argue the point in the report.
 
-It returns 10 words that turn up **inside their example sentences but never
-got a card of their own**, ranked by how often they have met them, each with
-the shortest sentence they met it in. These are words read on every review
-whose forms and meaning were never actually studied — `laps`, `päev`, `sõber`
-sit near the top here, and none of them has a three-forms card.
-
-If none of the ten fit the topic, page on: `vocab_debt(offset=10)`, then 20,
-and so on. Show the user the list and let them pick before writing anything —
-these are suggestions, not an assignment. The words arrive without a
-translation (there is no card to take one from), so supply it yourself and
-flag it in the report as usual.
-
-**When the user says they already know some of them, mark those words:**
+### The dose — edit these two numbers, nothing else
 
 ```
-anki-vocab:vocab_debt_skip(words=["hakkama", "tihti"])
+NEW_EVERY = 3     one new word in roughly every third deck-03 sentence
+NEW_MAX   = 5     never more than this many in one topic write
 ```
 
-Do this every time it happens, in the same turn. The tool reads the index and
-the index is built from Anki, where the user's answer does not exist — so
-without the mark the very same ten words come back in the next chat, and in
-every chat after that. The mark is permanent and survives index rebuilds;
-`undo=true` takes it back if something was marked by mistake.
+Everything below refers to these two names, so changing a number here changes
+the behaviour and nothing has to be edited twice.
 
-The list already skips words that have a card in a deck the index does not
-cover (the old A1 branch), so a basic word turning up here means it really has
-no card — but the learner is still the judge of whether it is worth one.
+- **One new word per sentence, never two.** Two unknowns in a sentence the
+  learner has to produce is exactly the friction being avoided.
+- Spread them across the topic rather than bunching them at the front.
+- A small topic (3–4 words) gets one or two, not `NEW_MAX`.
+- The rest of the deck-03 sentences stay fully grounded, as before.
 
-Note that `vocab_debt` and `text_check`'s `new words` line are opposite ends of
-the same thing: `new words` is what the learner has never met, `vocab_debt` is
-what they meet constantly and never learned.
+**Deck 01 and 02 are unchanged.** Their examples stay grounded under the usual
+soft rule — an occasional new word is tolerated there, but do not place one on
+purpose. The deliberate dose lives in deck 03 only.
+
+**Choosing the word.** It has to earn its place: ordinary A2 vocabulary that
+fits the topic, in a sentence where *everything else is known*, so the Russian
+side and the context carry the meaning. `sall` in a sentence about winter
+clothes is a good pick; an ornate verb the learner will not meet again for a
+year is not.
+
+**Report every one of them** — the word, its translation, and the sentence it
+went into, under «новые слова в предложениях». The learner decides from that
+list whether a word deserves cards of its own in decks 01/02; never create
+those cards on your own initiative.
+
+The loop closes either way: a word used in a sentence is indexed from it, so it
+stops counting as unknown, and later surfaces in `vocab_debt` as a candidate
+for a proper card.
 
 ## Grammar rules to keep applying (condensed; full detail lives in project memory)
 
@@ -271,7 +284,7 @@ Simplicity and grounding pull the same way: short everyday clauses built from kn
 
 5. **Per word**: identify lemma + POS, derive the 3 forms from the table above, and write the example sentences/translations per the grammar and A2-simplicity rules, **composing from the palette**.
 
-6. **Validate.** One batched `anki-vocab:text_check(sentences=[all sentences you wrote], targets=[the new words])`. Rewrite anything marked `low` and check again. Two rounds maximum.
+6. **Validate.** One batched `anki-vocab:text_check(sentences=[all sentences you wrote], targets=[the new words])`. Rewrite anything marked `low` and check again — but keep the deliberate `NEW_EVERY` words, they are the point. Two rounds maximum.
 
 7. **Write the topic** with one `anki-vocab:topic_write` call:
 
@@ -288,7 +301,8 @@ Simplicity and grounding pull the same way: short everyday clauses built from kn
 8. **Report back in Russian**, concisely. The `anki-vocab` tools answer in English to save tokens — that is between you and them; what reaches the user is Russian, including the words you quote from `new words` and `low` lines.
    - how many notes went into each deck;
    - average coverage from `text_check`, and any sentence still marked `low` with the reason;
-   - **кандидаты в следующую тему** — copy the `new words` line from the last `text_check` verbatim. If it listed nothing, write «нет». Don't extend the list from your own sense of what's new, and don't drop anything from it;
+   - **новые слова в предложениях** — the words you put into the deck-03 sentences on purpose: word, translation, and the sentence each went into. Close the list by offering to make cards for any of them in decks 01/02 — that is the learner's call, not yours;
+   - **кандидаты в следующую тему** — the rest of the `new words` line from the last `text_check`, i.e. whatever turned up beyond the deliberate dose. If it listed nothing, write «нет». Don't extend the list from your own sense of what's new, and don't drop anything from it;
    - **дубли — отдельным списком, готовым к действию.** For every word set aside in step 2, give the word, its Russian meaning, the topic(s) it already lives in, and its existing forms:
 
      ```
