@@ -42,6 +42,15 @@ def _tag_words(tags: list[str] | set[str]) -> set[str]:
     return out
 MARK = {KNOWN: "✓", SEEN: "~", UNKNOWN: "✗"}
 
+# Откуда в теме взялось слово. Слот заметки честнее колоды: старые темы
+# лежат в других форматах, а Form1/2/3 — это карточка трёх форм всегда.
+SLOT_MARK = {
+    "Form1": "3F", "Form2": "3F", "Form3": "3F",  # карточка трёх форм
+    "Answer": "ty",                               # typein, одна форма
+    "example": "ex",                              # только внутри примера
+}
+MARK_ORDER = ["3F", "ty", "other", "ex"]
+
 
 @dataclass
 class Hit:
@@ -71,15 +80,7 @@ class Vocab:
         if not row:
             return None
         lem, ru, level, pos, topics, forms, n_word = row
-        decks = [
-            topic_of(d)
-            for (d,) in self.con.execute(
-                "select distinct e.deck from form f"
-                " join entry e on e.note_id = f.note_id"
-                " where f.lemma = ? and e.is_phrase = 0",
-                (lem,),
-            )
-        ]
+        decks = self._where(lem)
         return Hit(
             query=lemma,
             status=KNOWN if n_word else SEEN,
@@ -87,6 +88,33 @@ class Vocab:
             topics=tuple(json.loads(topics)), forms=tuple(json.loads(forms)),
             decks=tuple(dict.fromkeys(decks)),
         )
+
+    def _where(self, lemma: str) -> list[str]:
+        """Тема плюс пометки, какого рода запись в ней лежит.
+
+        Одной темы мало: «слово уже в 09. Vaba aeg» может значить и
+        полноценную карточку трёх форм, и случайное попадание в чужой
+        пример. Решения это разные, а по имени темы их не различить.
+        """
+        # Держим сильнейшую пометку темы, а не все: у слова с карточкой
+        # трёх форм почти всегда есть и typein, и попадания в примеры —
+        # перечислять их значит платить токенами за то, что и так ясно.
+        best: dict[str, int] = {}
+        for deck, slot in self.con.execute(
+            "select distinct e.deck, f.slot from form f"
+            " join entry e on e.note_id = f.note_id"
+            " where f.lemma = ? and e.is_phrase = 0",
+            (lemma,),
+        ):
+            topic = topic_of(deck)
+            rank = MARK_ORDER.index(SLOT_MARK.get(slot, "other"))
+            best[topic] = min(rank, best.get(topic, len(MARK_ORDER)))
+        # Тема с карточкой трёх форм — главный ответ на вопрос «дубль ли
+        # это», и обрезка списка не должна её съесть.
+        return [
+            f"{topic} {MARK_ORDER[rank]}"
+            for topic, rank in sorted(best.items(), key=lambda kv: kv[1])
+        ]
 
     def lookup(self, word: str) -> Hit:
         """Точная форма → лемма формы → лемма по морфологии."""

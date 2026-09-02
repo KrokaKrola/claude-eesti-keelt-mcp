@@ -22,7 +22,7 @@ def vocab():
     con.executemany(
         "insert into lemma (lemma,ru,pos,level,topics,forms,n_notes,n_word_notes,"
         "strength,first_seen) values (?,?,?,?,?,?,?,?,?,0)", rows)
-    con.executemany("insert into form(form,lemma,note_id,slot) values (?,?,?,'F')",
+    con.executemany("insert into form(form,lemma,note_id,slot) values (?,?,?,'Form2')",
                     [("jõe", "jõgi", 1), ("kübarat", "kübar", 2)])
     # Палитра берётся с карточек, а не из лемм: заголовок карточки — уже
     # словарная форма. 'Kindad' и 'Kaasa elama' проверяют именно это:
@@ -218,4 +218,25 @@ def test_lookup_reports_where_the_word_already_lives(vocab):
         " (1, 'Estonian 3 Forms', 'kursuse eesti keel::A2::09. Vaba aeg::01. sõnad',"
         " '[]', 'река', 'jõgi', 'jõgi', '[]', 0, 0)"
     )
-    assert vocab.lookup("jõe").decks == ("09. Vaba aeg",)
+    assert vocab.lookup("jõe").decks == ("09. Vaba aeg 3F",)
+
+
+def test_lookup_separates_a_word_card_from_a_passing_mention(vocab):
+    """«Слово уже есть в 09. Vaba aeg» значит разное: карточка трёх форм —
+    это дубль, попадание в чужой пример — нет."""
+    vocab.con.execute(
+        "insert into entry (note_id, notetype, deck, topics, ru, headword,"
+        " et_raw, examples, is_phrase, mod) values"
+        " (1, 'Estonian 3 Forms', 'kursuse eesti keel::A2::09. Vaba aeg::01. sõnad',"
+        " '[]', 'река', 'jõgi', 'jõgi', '[]', 0, 0)"
+    )
+    vocab.con.execute(
+        "insert into entry (note_id, notetype, deck, topics, ru, headword,"
+        " et_raw, examples, is_phrase, mod) values"
+        " (2, 'Estonian 3 Forms', 'kursuse eesti keel::A2::08. Loomad::01. sõnad',"
+        " '[]', 'рыба', 'kala', 'kala', '[]', 0, 0)"
+    )
+    vocab.con.execute(
+        "insert into form(form,lemma,note_id,slot) values ('jõel','jõgi',2,'example')"
+    )
+    assert vocab.lookup("jõgi").decks == ("09. Vaba aeg 3F", "08. Loomad ex")

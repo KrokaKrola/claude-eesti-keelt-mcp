@@ -134,14 +134,23 @@ If the user says to go ahead: compose from your own knowledge of the topic, skip
 - `~` — the word has only ever appeared inside an example sentence. Counts as known, never offered in the palette.
 - `✗` — not in the collection at all.
 
-A `✓` line also shows, in square brackets, the topic(s) the word already lives in. The line is capped to keep it short — at most 3 tags, 4 forms and 2 decks; when a word lives in more topics the brackets end with `+N more`, and the duplicate report should say so rather than pretend the list is complete:
+A `✓` line also shows, in square brackets, the topic(s) the word already lives in and **what kind of record sits there**:
+
+- `3F` — a full three-forms card (deck `01. sõnad`). This is a real duplicate.
+- `ty` — only a single-form typein note (deck `02`) or an old-format drill. The word has no proper dictionary card yet.
+- `ex` — the word merely turned up inside somebody else's example sentence. Not a card at all.
+
+Each topic carries its strongest mark only, and topics with `3F` come first, so a truncated list never hides the duplicate signal. The line is capped to stay short — at most 3 tags, 4 forms and 2 topics; beyond that the brackets end with `+N more`, and the duplicate report should say so rather than pretend the list is complete:
 
 ```
-korvpall ✓ a2 aeg,elu,liikumine  korvpall/korvpalli/korvpalliga  [09. Vaba aeg; 10. Liikumine on elu]
-ujuma    ✓ a2 aeg,vaba  ujub/ujuda/ujuma/ujumas  [08. Loomad; 09. Vaba aeg; +1 more]
+korvpall ✓ a2 aeg,elu,liikumine  korvpall/korvpalli/korvpalliga  [09. Vaba aeg 3F; 10. Liikumine on elu 3F]
+ujuma    ✓ a2 aeg,vaba  ujub/ujuda/ujuma/ujumas  [09. Vaba aeg 3F; 08. Loomad ex; +1 more]
+pidama   ✓ lihtminevik  peab/peame/pean  [01. sõnad typein ty; 04. kodused tööd ex; +7 more]
 ```
 
-That location matters for the duplicate report below: a word already sitting in the topic being filled is a true duplicate, while the same word coming from a different topic may still be worth adding here.
+`korvpall` and `ujuma` already have proper cards; `pidama` does not — it only ever got a typein note, so a three-forms card for it would be new material, not a duplicate.
+
+That distinction drives the duplicate report below, together with location: a word with `3F` in the topic being filled is a true duplicate, the same word with `3F` in another topic may still be worth adding here, and `ty`/`ex` mean the word has no dictionary card at all.
 
 ## Vocabulary target (soft)
 
@@ -218,10 +227,10 @@ Simplicity and grounding pull the same way: short everyday clauses built from kn
 
      ```
      ### Пропущено как дубли
-     | слово | значение | уже есть в теме | формы |
-     |---|---|---|---|
-     | korvpall | баскетбол | 09. Vaba aeg; 10. Liikumine on elu | korvpall/korvpalli/korvpalliga |
-     | ujuma | плавать | 08. Loomad; 09. Vaba aeg; +1 more | ujub/ujuda/ujuma/ujumas |
+     | слово | значение | уже есть в теме | что там лежит | формы |
+     |---|---|---|---|---|
+     | korvpall | баскетбол | 09. Vaba aeg; 10. Liikumine on elu | карточка 3 форм | korvpall/korvpalli/korvpalliga |
+     | ujuma | плавать | 09. Vaba aeg; 08. Loomad; +1 more | карточка 3 форм / только в примере | ujub/ujuda/ujuma/ujumas |
      ```
 
      Close the report by offering to add them anyway — one line, e.g. «Скажи, если всё равно нужно добавить — сделаю карточки и для них.» If the user asks for it, run the full workflow for exactly those words, skipping step 2's filter, and reuse the forms from `word_forms` so the new cards agree with the existing ones. Never add them on your own initiative: a word already in the target topic is usually a real duplicate, while the same word arriving from a different topic may be worth a second card — that is the user's call, not yours.
