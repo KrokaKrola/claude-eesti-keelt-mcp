@@ -210,7 +210,7 @@ Simplicity and grounding pull the same way: short everyday clauses built from kn
 
    If the call reports an error mid-write, some subdecks may already hold notes. Say so plainly in the report: **Ctrl+Z in Anki undoes the batch**.
 
-8. **Report back in Russian**, concisely:
+8. **Report back in Russian**, concisely. The `anki-vocab` tools answer in English to save tokens — that is between you and them; what reaches the user is Russian, including the words you quote from `new words` and `low` lines.
    - how many notes went into each deck;
    - average coverage from `text_check`, and any sentence still marked `low` with the reason;
    - **кандидаты в следующую тему** — copy the `new words` line from the last `text_check` verbatim. If it listed nothing, write «нет». Don't extend the list from your own sense of what's new, and don't drop anything from it;

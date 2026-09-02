@@ -79,7 +79,8 @@ mcp = MCPServer(
         "The learner's Estonian vocabulary from Anki. Before composing "
         "examples, load the palette with vocab_pool and build phrases from "
         "it; check drafts with text_check. Run new word lists through "
-        "vocab_check before creating cards."
+        "vocab_check before creating cards. "
+        "These tools speak English to save tokens; answer the user in Russian."
     ),
 )
 
