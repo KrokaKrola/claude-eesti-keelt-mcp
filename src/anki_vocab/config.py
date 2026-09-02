@@ -16,6 +16,12 @@ COLLECTION = Path(os.environ.get("ANKI_COLLECTION", _DEFAULT_COLLECTION))
 SNAPSHOT = DATA_DIR / "snapshot.anki2"
 INDEX = DATA_DIR / "vocab.sqlite"
 
+# Настройки аддона Anki MCP Server: оттуда берём адрес и порт, на
+# которых он слушает. Пользователь может поменять их мышкой.
+ADDON_META = (
+    Path.home() / "Library/Application Support/Anki2/addons21/124672614/meta.json"
+)
+
 # Файлы SQLite, которые нужно копировать вместе: без -wal данные отстают.
 COLLECTION_PARTS = ("", "-wal", "-shm")
 

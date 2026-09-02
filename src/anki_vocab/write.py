@@ -1,0 +1,451 @@
+"""Запись карточек в Anki через аддон Anki MCP Server.
+
+Своей SQLite в живую коллекцию не пишем никогда — почему, подробно
+написано в collection.py. Пишет Anki, мы только доносим до него готовые
+заметки по HTTP на localhost.
+
+Модуль делится надвое:
+
+  * ``build_topic`` разворачивает слово в заметки трёх подколод темы —
+    чистые функции без сети, их и проверяют тесты;
+  * ``call`` и ``write_topic`` разговаривают с аддоном.
+
+Раскладка слова по заметкам раньше жила в голове модели: она читала
+таблицу подписей из скилла и переписывала её руками в 45 заметок. Здесь
+у неё нет выбора, а значит нет и способа ошибиться.
+"""
+from __future__ import annotations
+
+import dataclasses
+import json
+import os
+import re
+import urllib.error
+import urllib.request
+from typing import Any, Callable
+
+from .config import ADDON_META, POS_TAGS
+
+SUBDECKS = ("01. sõnad", "02. sõnad typein", "03. lause typein")
+MODEL_WORD = "Estonian 3 Forms"
+MODEL_TYPEIN = "Estonian Word Forms with TypeIn"
+
+# Аддон режет пачку на 100 заметок; на слово приходится три заметки
+# колоды 02, она и упирается в потолок первой.
+MAX_NOTES_PER_BATCH = 100
+MAX_WORDS = MAX_NOTES_PER_BATCH // 3
+
+NOUN_LABELS = (
+    "1-я форма (номинатив)",
+    "2-я форма (генитив)",
+    "3-я форма (партитив)",
+)
+VERB_LABELS = (
+    "1-я форма (ma-инфинитив)",
+    "2-я форма (da-инфинитив)",
+    "3-я форма (mina-vorm)",
+)
+
+# Склоняются как существительное. Остальное либо спрягается (глагол),
+# либо не меняется вовсе и подписи форм не получает.
+NOUN_LIKE = {"существительное", "прилагательное", "местоимение", "числительное"}
+
+
+class AnkiError(RuntimeError):
+    """Аддон недоступен или отказался выполнять запрос."""
+
+
+class NoteDataError(ValueError):
+    """Данные слов не прошли проверку.
+
+    Собираем все претензии разом: по одной модель чинит их кругами,
+    каждый раз заново сочиняя весь список.
+    """
+
+    def __init__(self, problems: list[str]):
+        self.problems = problems
+        super().__init__("; ".join(problems))
+
+
+# --------------------------------------------------------------------------
+# Разворачивание слова в заметки
+# --------------------------------------------------------------------------
+
+
+@dataclasses.dataclass
+class Batch:
+    """Одна подколода: что за модель и какие заметки в неё кладём."""
+
+    deck: str
+    model: str
+    notes: list[dict]
+
+
+def topic_words(topic: str) -> list[str]:
+    """'09. Vaba aeg' → ['aeg', 'vaba'].
+
+    Номер отрезаем, слова опускаем в нижний регистр и сортируем: именно
+    по этим тегам потом ищет vocab_pool, и порядок должен быть один и
+    тот же у всех тем.
+    """
+    bare = re.sub(r"^\s*\d+[.)]?\s*", "", topic.strip())
+    return sorted({w.lower() for w in re.findall(r"[^\W\d_]+", bare, re.UNICODE)})
+
+
+def level_tag(course: str) -> str | None:
+    """'kursuse eesti keel::A2' → 'A2'. Не угадали — тега уровня не будет."""
+    tail = course.split("::")[-1].strip()
+    return tail.upper() if re.fullmatch(r"[ABC][12]", tail, re.IGNORECASE) else None
+
+
+def form_labels(pos: str, forms: list[str]) -> tuple[str, ...] | None:
+    """Подписи трёх форм. None — слово неизменяемое.
+
+    Неизменяемость определяем по самим формам, а не по части речи:
+    наречие с тремя одинаковыми формами и местоимение вроде 'kogu'
+    ведут себя одинаково, а спрашивать об этом модель — лишний повод
+    ошибиться.
+    """
+    if len({f.strip().lower() for f in forms}) == 1:
+        return None
+    return VERB_LABELS if pos == "глагол" else NOUN_LABELS
+
+
+def _pair(value: Any) -> tuple[str, str] | None:
+    if isinstance(value, (list, tuple)) and len(value) == 2:
+        et, ru = (str(x).strip() for x in value)
+        if et and ru:
+            return et, ru
+    return None
+
+
+def _validate(word: dict, seen: set[str], where: str, problems: list[str]) -> dict | None:
+    """Проверяет одно слово. Возвращает нормализованный вид или None."""
+    before = len(problems)
+
+    et = str(word.get("word", "")).strip()
+    if not et:
+        problems.append(f"{where}: пустое поле word")
+        et = "?"
+
+    key = et.lower()
+    if key in seen:
+        problems.append(f"{where}: слово '{et}' в списке дважды")
+    seen.add(key)
+
+    pos = POS_TAGS.get(str(word.get("pos", "")).strip().lower())
+    if pos is None:
+        problems.append(
+            f"{where} ({et}): pos='{word.get('pos')}' — ожидается одно из: "
+            + ", ".join(sorted(set(POS_TAGS.values())))
+        )
+
+    ru = str(word.get("ru", "")).strip()
+    if not ru:
+        problems.append(f"{where} ({et}): пустой перевод ru")
+
+    forms = word.get("forms")
+    if isinstance(forms, str):
+        forms = [forms]
+    if not isinstance(forms, list) or not all(str(f).strip() for f in forms):
+        problems.append(f"{where} ({et}): forms — список из 3 непустых форм (или 1 для неизменяемого слова)")
+        forms = []
+    elif len(forms) == 1:
+        forms = [str(forms[0]).strip()] * 3
+    elif len(forms) == 3:
+        forms = [str(f).strip() for f in forms]
+    else:
+        problems.append(f"{where} ({et}): forms — {len(forms)} шт., нужно 3 (или 1 для неизменяемого слова)")
+        forms = []
+
+    raw_ex = word.get("ex")
+    if isinstance(raw_ex, list) and len(raw_ex) in (1, 3):
+        pairs = [_pair(p) for p in raw_ex]
+        if None in pairs:
+            problems.append(f"{where} ({et}): ex — каждый пример это пара ['эстонский', 'русский'], оба непустые")
+            ex = []
+        else:
+            ex = pairs * 3 if len(pairs) == 1 else pairs
+    else:
+        problems.append(f"{where} ({et}): ex — 3 пары ['эстонский', 'русский'] (или 1 для неизменяемого слова)")
+        ex = []
+
+    sentence = _pair(word.get("sentence"))
+    if sentence is None:
+        problems.append(f"{where} ({et}): sentence — пара ['эстонский', 'русский'] для колоды 03")
+
+    if len(problems) > before:
+        return None
+    return {"word": et, "pos": pos, "ru": ru, "forms": forms, "ex": ex, "sentence": sentence}
+
+
+def build_topic(
+    course: str,
+    topic: str,
+    words: list[dict],
+    form_in_example: Callable[[str, str], bool] | None = None,
+) -> tuple[list[Batch], list[str]]:
+    """Слова → три пачки заметок и список предупреждений.
+
+    Предупреждение — не отказ: 4% словарных карточек в коллекции уже
+    нарушают правило «пример содержит форму» вполне законно (у глагола
+    'algama' пример идёт с 'algab'), так что блокировать по нему нельзя.
+    """
+    if not words:
+        raise NoteDataError(["пустой список words"])
+    if len(words) > MAX_WORDS:
+        raise NoteDataError(
+            [f"{len(words)} слов за раз — аддон принимает не больше {MAX_WORDS} "
+             f"(колода 02 даёт по 3 заметки на слово, потолок пачки {MAX_NOTES_PER_BATCH}). "
+             "Раздели на несколько вызовов."]
+        )
+
+    problems: list[str] = []
+    seen: set[str] = set()
+    clean = [
+        ok
+        for i, w in enumerate(words)
+        if (ok := _validate(w if isinstance(w, dict) else {}, seen, f"слово {i + 1}", problems))
+    ]
+    if problems:
+        raise NoteDataError(problems)
+
+    shared = [t for t in (level_tag(course),) if t] + topic_words(topic)
+    root = f"{course}::{topic}"
+    warnings: list[str] = []
+
+    notes01: list[dict] = []
+    notes02: list[dict] = []
+    notes03: list[dict] = []
+
+    for w in clean:
+        forms, ex, pos = w["forms"], w["ex"], w["pos"]
+        labels = form_labels(pos, forms)
+
+        if form_in_example is not None:
+            for i, (form, (et, _)) in enumerate(zip(forms, ex), start=1):
+                if not form_in_example(form, et):
+                    warnings.append(f"{w['word']}: форма {i} ({form}) не встречается в примере «{et}»")
+
+        fields01 = {"Russian": w["ru"], "Add Reverse": "1"}
+        for i, (form, (et, ru)) in enumerate(zip(forms, ex), start=1):
+            fields01[f"Form{i}"] = form
+            fields01[f"Ex{i}"] = et
+            fields01[f"Ex{i}ru"] = ru
+        notes01.append({"fields": fields01, "tags": sorted({*shared, pos})})
+
+        # Одна заметка на форму, слово за словом: Anki показывает новые
+        # карточки в порядке добавления, и три формы должны попасться
+        # подряд, а не с разбросом в неделю.
+        slots = zip(labels, forms, ex) if labels else [("", forms[0], ex[0])]
+        for label, form, (et, ru) in slots:
+            notes02.append({
+                "fields": {
+                    "Russian": w["ru"],
+                    "Form": label,
+                    "Answer": form.lower(),
+                    "Example_ET": et,
+                    "Example_RU": ru,
+                },
+                "tags": sorted({*shared, pos}),
+            })
+
+        et, ru = w["sentence"]
+        notes03.append({
+            "fields": {
+                "Russian": ru,
+                "Form": "",
+                "Answer": et,
+                "Example_ET": "",
+                "Example_RU": "",
+            },
+            "tags": sorted({*shared, "lause"}),
+        })
+
+    batches = [
+        Batch(f"{root}::{SUBDECKS[0]}", MODEL_WORD, notes01),
+        Batch(f"{root}::{SUBDECKS[1]}", MODEL_TYPEIN, notes02),
+        Batch(f"{root}::{SUBDECKS[2]}", MODEL_TYPEIN, notes03),
+    ]
+    return batches, warnings
+
+
+# --------------------------------------------------------------------------
+# Разговор с аддоном
+# --------------------------------------------------------------------------
+
+
+def endpoint() -> str:
+    """Адрес аддона берём из его же настроек: порт там меняется мышкой,
+    и хардкод разошёлся бы с реальностью молча."""
+    if url := os.environ.get("ANKI_MCP_URL"):
+        return url
+    host, port, path = "127.0.0.1", 3141, ""
+    try:
+        cfg = json.loads(ADDON_META.read_text()).get("config", {})
+        host = cfg.get("http_host") or host
+        port = cfg.get("http_port") or port
+        path = cfg.get("http_path") or ""
+    except (OSError, ValueError):
+        pass
+    return f"http://{host}:{port}/{path.lstrip('/')}"
+
+
+def _unwrap(body: str) -> dict:
+    """Ответ приходит как SSE: 'event: message' и строка 'data: {...}'."""
+    for line in body.splitlines():
+        if line.startswith("data: "):
+            return json.loads(line[6:])
+    raise AnkiError(f"аддон ответил не по протоколу: {body[:200]}")
+
+
+def call(tool: str, args: dict, timeout: float = 60.0) -> dict:
+    """Вызов инструмента аддона. Ошибки переводим в понятную строку —
+    модель увидит её вместо стектрейса и сможет сказать пользователю,
+    что делать."""
+    payload = json.dumps(
+        {"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+         "params": {"name": tool, "arguments": args}}
+    ).encode()
+    request = urllib.request.Request(
+        endpoint(),
+        data=payload,
+        headers={
+            "Content-Type": "application/json",
+            "Accept": "application/json, text/event-stream",
+        },
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as resp:
+            body = resp.read().decode("utf-8")
+    except (urllib.error.URLError, TimeoutError, OSError) as exc:
+        raise AnkiError(
+            f"не достучался до аддона на {endpoint()}: {exc}. "
+            "Anki запущен? Ничего не записано."
+        ) from exc
+
+    message = _unwrap(body)
+    if "error" in message:
+        raise AnkiError(f"{tool}: {message['error'].get('message', message['error'])}")
+
+    result = message.get("result", {})
+    if result.get("isError"):
+        text = "".join(c.get("text", "") for c in result.get("content", []))
+        raise AnkiError(f"{tool}: {text or 'аддон вернул ошибку без текста'}")
+    if (structured := result.get("structuredContent")) is not None:
+        return structured
+    for chunk in result.get("content", []):
+        if chunk.get("type") == "text":
+            return json.loads(chunk["text"])
+    raise AnkiError(f"{tool}: пустой ответ")
+
+
+def deck_names() -> set[str]:
+    """Все колоды Anki. Ответ большой, но он остаётся внутри сервера и
+    в контекст модели не попадает."""
+    return {d["name"] for d in call("list_decks", {}).get("decks", [])}
+
+
+def _nearest_existing(deck: str, existing: set[str]) -> str:
+    """Ближайший существующий предок: create_deck аддона умеет только
+    два уровня, поэтому глубокую ветку приходится создавать переносом
+    карточек. Заметки временно ложатся сюда."""
+    parts = deck.split("::")
+    for i in range(len(parts) - 1, 0, -1):
+        if (candidate := "::".join(parts[:i])) in existing:
+            return candidate
+    return "Default"
+
+
+def _card_ids(note_ids: list[int]) -> list[int]:
+    info = call("notes_info", {"notes": note_ids, "include_fields": [], "excerpt_chars": 1})
+    return [cid for note in info.get("notes", []) for cid in note.get("cards", [])]
+
+
+def _add(batch: Batch, existing: set[str]) -> tuple[int, list[str]]:
+    """Кладёт пачку в свою подколоду, создавая её при необходимости.
+
+    Возвращает число созданных заметок и список отказов от аддона.
+    """
+    if not batch.notes:
+        return 0, []
+
+    target_exists = batch.deck in existing
+    dest = batch.deck if target_exists else _nearest_existing(batch.deck, existing)
+
+    result = call("add_notes", {
+        "deck_name": dest,
+        "model_name": batch.model,
+        "notes": batch.notes,
+        # Дубли отсеяны раньше через vocab_check; здесь флаг только
+        # мешает Anki зарубить три формы одного слова как повтор.
+        "allow_duplicate": True,
+    })
+
+    created = [r for r in result.get("results", []) if r.get("status") == "created"]
+    rejected = [
+        f"заметка {r['index'] + 1}: {r.get('error') or r.get('reason', 'отклонена')}"
+        for r in result.get("results", [])
+        if r.get("status") != "created"
+    ]
+
+    if not target_exists and created:
+        # change_deck создаёт путь любой глубины — это единственный
+        # способ получить четырёхуровневую колоду через аддон.
+        call("card_management", {
+            "params": {
+                "action": "change_deck",
+                "card_ids": _card_ids([r["note_id"] for r in created]),
+                "deck": batch.deck,
+            }
+        })
+        existing.add(batch.deck)
+
+    return len(created), rejected
+
+
+def write_topic(
+    course: str,
+    topic: str,
+    words: list[dict],
+    form_in_example: Callable[[str, str], bool] | None = None,
+    dry_run: bool = False,
+) -> str:
+    """Полный проход: проверить, разложить, создать колоды, записать."""
+    batches, warnings = build_topic(course, topic, words, form_in_example)
+
+    head = f"{course}::{topic}"
+    lines: list[str] = []
+
+    if dry_run:
+        lines.append(f"{head} — черновик, ничего не записано")
+        for batch in batches:
+            lines.append(f"  {batch.deck.split('::')[-1]:<18} {len(batch.notes)}")
+        example = batches[0].notes[0]
+        lines.append("  первая заметка 01: " + json.dumps(example, ensure_ascii=False))
+        return "\n".join(lines + _warning_lines(warnings))
+
+    existing = deck_names()
+    total = 0
+    for batch in batches:
+        name = batch.deck.split("::")[-1]
+        try:
+            created, rejected = _add(batch, existing)
+        except AnkiError as exc:
+            # Дальше не идём: половина темы лучше, чем половина с дырой
+            # посередине, а Ctrl+Z в Anki снимает записанное целиком.
+            lines.append(f"  {name:<18} ОШИБКА: {exc}")
+            lines.append("  остальные колоды не тронуты; записанное отменяется в Anki через Ctrl+Z")
+            return "\n".join([f"{head} — записано {total} заметок, дальше сбой"] + lines)
+        total += created
+        mark = "✓" if not rejected else "⚠"
+        lines.append(f"  {name:<18} {created} {mark}")
+        lines.extend(f"      {r}" for r in rejected)
+
+    return "\n".join([f"{head} — {total} заметок"] + lines + _warning_lines(warnings))
+
+
+def _warning_lines(warnings: list[str]) -> list[str]:
+    if not warnings:
+        return []
+    return ["", "предупреждения (записи не мешают):"] + [f"  {w}" for w in warnings]

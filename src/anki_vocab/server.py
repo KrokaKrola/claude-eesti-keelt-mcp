@@ -17,9 +17,11 @@ import time
 
 from mcp.server.mcpserver import MCPServer
 
+from .collection import deck_names, open_snapshot
 from .config import INDEX
 from .index import ensure_fresh, open_index
 from .lemma import Lemmatizer
+from .parse import words as split_words
 from .query import (
     UNKNOWN,
     Vocab,
@@ -28,6 +30,7 @@ from .query import (
     format_text_check,
     topic_state as _topic_state,
 )
+from .write import AnkiError, NoteDataError, write_topic
 
 # Пишем только своим логгером и не через root: иначе на уровне DEBUG
 # matplotlib, который тянет за собой estnltk, заливает лог своим шумом.
@@ -240,6 +243,86 @@ def topic_state(topic: str) -> str:
     with _lock:
         _fresh()
         return _topic_state(_con, topic)
+
+
+def _form_in_example(vocab: Vocab):
+    """Проверка «пример содержит форму» по леммам, а не по буквам:
+    у глагола algama пример законно идёт с algab, и строковое сравнение
+    ругалось бы на каждой второй карточке."""
+
+    def check(form: str, sentence: str) -> bool:
+        target = vocab.lem.lemmas(form)
+        if not target:  # не разобрали слово — не придираемся
+            return True
+        return any(target & vocab.lem.lemmas(w) for w in split_words(sentence))
+
+    return check
+
+
+@mcp.tool(
+    description=(
+        "Записывает тему в Anki: одно слово → 5 заметок трёх подколод "
+        "(01. sõnad, 02. sõnad typein, 03. lause typein). Подписи форм, "
+        "теги, порядок заметок и создание колод сервер делает сам — "
+        "передавай только содержание. Anki должен быть запущен.\n"
+        "words — список словарей: word (эстонское слово), pos "
+        "('существительное'/'глагол'/'прилагательное'/'наречие'/"
+        "'местоимение'/…), ru (перевод), forms (3 формы по правилам "
+        "части речи; для неизменяемого слова достаточно одной), ex "
+        "(3 пары ['эстонский пример','перевод'], пример N показывает "
+        "форму N; для неизменяемого хватит одной пары), sentence "
+        "(пара ['новое предложение','перевод'] для колоды 03).\n"
+        "До 33 слов за вызов. Проверка идёт до записи: если данные "
+        "кривые, не создаётся ни одной заметки и приходит список всех "
+        "претензий сразу. dry_run=true показывает, что будет записано, "
+        "ничего не трогая."
+    )
+)
+@traced
+def topic_write(
+    topic: str,
+    words: list[dict],
+    course: str = "kursuse eesti keel::A2",
+    dry_run: bool = False,
+) -> str:
+    with _lock:
+        vocab = _fresh()
+        try:
+            report = write_topic(
+                course, topic, words,
+                form_in_example=_form_in_example(vocab),
+                dry_run=dry_run,
+            )
+        except NoteDataError as exc:
+            return "не записано, поправь данные:\n" + "\n".join(
+                f"  {p}" for p in exc.problems
+            )
+        except AnkiError as exc:
+            return f"не записано: {exc}"
+        if not dry_run:
+            ensure_fresh(_con)  # новые слова сразу видны vocab_check
+    return report
+
+
+@mcp.tool(
+    description=(
+        "Ищет колоду по куску имени — когда точное написание забыто или "
+        "в нём опечатка. Читает копию коллекции, Anki для этого не нужен."
+    )
+)
+@traced
+def deck_find(pattern: str) -> str:
+    needle = pattern.strip().lower()
+    if not needle:
+        return "пустой запрос"
+    con = open_snapshot()
+    try:
+        hits = sorted(n for n in deck_names(con).values() if needle in n.lower())
+    finally:
+        con.close()
+    if not hits:
+        return f"колод с «{pattern}» нет"
+    return "\n".join(hits[:40]) + (f"\n… ещё {len(hits) - 40}" if len(hits) > 40 else "")
 
 
 def main() -> None:
