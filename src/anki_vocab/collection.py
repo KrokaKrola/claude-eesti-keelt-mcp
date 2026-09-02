@@ -120,16 +120,20 @@ def note_decks(con: sqlite3.Connection) -> dict[int, int]:
     }
 
 
-def note_stats(con: sqlite3.Connection) -> dict[int, tuple[float, int]]:
-    """note_id → (средний интервал в днях, число повторов).
+def note_stats(con: sqlite3.Connection) -> dict[int, tuple[float, int, int]]:
+    """note_id → (средний интервал в днях, число повторов, число срывов).
 
     Интервал повторения — единственный честный ответ на вопрос
     «насколько хорошо человек знает это слово». Число карточек таким
     ответом не является: у полностью обработанного слова их всегда 4.
+
+    Срыв (lapses) — сколько раз выученная карточка снова уехала в «Again».
+    Интервал говорит, где человек сейчас, срывы — где ему было тяжело;
+    вместе они и отделяют трудное слово от просто нового.
     """
     return {
-        nid: (avg_ivl or 0.0, reps or 0)
-        for nid, avg_ivl, reps in con.execute(
-            "select nid, avg(ivl), sum(reps) from cards group by nid"
+        nid: (avg_ivl or 0.0, reps or 0, lapses or 0)
+        for nid, avg_ivl, reps, lapses in con.execute(
+            "select nid, avg(ivl), sum(reps), sum(lapses) from cards group by nid"
         )
     }

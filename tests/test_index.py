@@ -1,8 +1,17 @@
+import json
 import sqlite3
 
 import pytest
 
-from anki_vocab.index import SCHEMA, reconcile_decks
+from anki_vocab import collection
+from anki_vocab.index import (
+    SCHEMA,
+    _headword_lemmas,
+    is_stale,
+    open_index,
+    reconcile_decks,
+    refresh_stats,
+)
 
 
 @pytest.fixture
@@ -51,3 +60,74 @@ def test_note_missing_from_map_is_left_alone(con):
     """Заметку, которой нет в карте колод, не трогаем: её удалением
     занимается сверка области видимости, а не эта функция."""
     assert reconcile_decks(con, {1: "курс::A2::07. Aias"}) == 0
+
+
+def test_review_stats_are_refreshed_without_a_note_edit(con):
+    """Повтор карточки не меняет notes.mod, поэтому инкремент заметку не
+    перечитывает — а подсказка «трудные слова» живёт ровно на этих числах."""
+    assert refresh_stats(con, {1: (45.0, 12, 3), 2: (0.0, 0, 0)}) == 3
+    rows = dict(
+        (nid, (ivl, reps, lapses))
+        for nid, ivl, reps, lapses in con.execute(
+            "select note_id, ivl, reps, lapses from entry"
+        )
+    )
+    assert rows[1] == (45.0, 12, 3)
+    assert rows[3] == (0.0, 0, 0), "заметки без карточек обнуляются, а не пропадают"
+
+
+def test_version_bump_leaves_no_index_pretending_to_be_fresh(tmp_path):
+    """Смена версии сносит таблицы. Отпечаток коллекции при этом раньше
+    оставался — и досборка отвечала «коллекция не менялась» поверх пустого
+    индекса: сервер молча знал ноль слов, всё выглядело новым."""
+    path = tmp_path / "vocab.sqlite"
+    con = open_index(path)
+    con.execute(
+        "insert into entry (note_id, notetype, deck, topics, ru, headword,"
+        " et_raw, examples, is_phrase, mod) values"
+        " (1,'Basic','курс::A2::07. Aias','[]','','x','x','[]',0,0)"
+    )
+    # Отпечаток настоящий: с выдуманным is_stale вернул бы True по
+    # другой причине и тест прошёл бы даже со сломанной проверкой версии.
+    con.execute(
+        "insert or replace into meta values ('fingerprint', ?)",
+        (json.dumps(collection.fingerprint()),),
+    )
+    con.commit()
+    con.close()
+
+    con = sqlite3.connect(path)
+    con.execute("update meta set value = '0' where key = 'index_version'")
+    con.commit()
+    con.close()
+
+    con = open_index(path)
+    assert con.execute("select count(*) from entry").fetchone()[0] == 0
+    assert is_stale(con), "пустой индекс обязан считаться устаревшим"
+
+
+@pytest.fixture
+def lem():
+    from anki_vocab.lemma import Lemmatizer
+
+    c = sqlite3.connect(":memory:")
+    c.executescript(SCHEMA)
+    return Lemmatizer(c)
+
+
+def test_headword_of_a_basic_card_is_recognised(lem):
+    """У Basic разбор выбирает эстонскую сторону по числу латинских слов
+    и отдаёт заднюю с примером — заголовок терялся, и слово с карточкой
+    уезжало в долг."""
+    assert _headword_lemmas("hommik\x1fутро Hommik on ilus.", lem) == {"hommik"}
+
+
+def test_headword_skips_sentences_and_translations(lem):
+    assert _headword_lemmas("Ma tahan lugeda raamatut.\x1fЯ хочу", lem) == set()
+    assert _headword_lemmas("ребёнок\x1flaps", lem) == set()
+    assert _headword_lemmas("", lem) == set()
+
+
+def test_headword_keeps_phrasal_verbs(lem):
+    """Два слова разрешены ради 'kaasa elama' — это словарная единица."""
+    assert _headword_lemmas("kaasa elama\x1fболеть за", lem) == {"kaasa", "elama"}

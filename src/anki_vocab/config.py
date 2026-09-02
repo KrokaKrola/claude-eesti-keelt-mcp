@@ -26,7 +26,7 @@ ADDON_META = (
 COLLECTION_PARTS = ("", "-wal", "-shm")
 
 EXPECTED_SCHEMA_VER = 18
-INDEX_VERSION = 4
+INDEX_VERSION = 6
 
 # Поднимать при любой правке логики разбора в lemma.py: иначе кэш молча
 # отдаёт разборы, посчитанные старым кодом.
