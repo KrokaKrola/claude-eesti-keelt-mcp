@@ -297,8 +297,8 @@ def topic_state(con: sqlite3.Connection, topic: str) -> str:
     ).fetchall()
     if not rows:
         return (
-            f"темы «{topic}» в индексе нет — либо её ещё не создали, "
-            "либо она в колоде вне области видимости"
+            f"topic '{topic}' is not in the index — either it does not exist "
+            "yet, or its deck is out of scope"
         )
     root = rows[0][0].split("::")
     while root and root[-1] in SUBDECKS:
@@ -309,7 +309,7 @@ def topic_state(con: sqlite3.Connection, topic: str) -> str:
     present = {r[0].split("::")[-1]: r[1] for r in rows}
     for sub in SUBDECKS:
         n = present.get(sub)
-        lines.append(f"  {sub:18} {n if n is not None else 'нет'}")
+        lines.append(f"  {sub:18} {n if n is not None else '—'}")
     # По леммам, а не по headword: в подколоде 02 каждая форма — своя
     # заметка, и список из заголовков выдавал 'Alates' и 'alates', 'sall'
     # и 'salli' как разные слова, втрое завышая счётчик темы.
@@ -326,8 +326,8 @@ def topic_state(con: sqlite3.Connection, topic: str) -> str:
         # Полный список на большой теме — это под тысячу токенов.
         # Для проверки конкретных слов есть vocab_check.
         shown = heads[:60]
-        tail = f" … ещё {len(heads) - len(shown)}" if len(heads) > len(shown) else ""
-        lines.append(f"слова ({len(heads)}): " + ", ".join(shown) + tail)
+        tail = f" … +{len(heads) - len(shown)} more" if len(heads) > len(shown) else ""
+        lines.append(f"words ({len(heads)}): " + ", ".join(shown) + tail)
     return "\n".join(lines)
 
 
@@ -349,16 +349,16 @@ def format_check(hits: list[Hit]) -> str:
         # но молча обрезать нельзя — 23% слов живут больше чем в двух темах.
         shown = "; ".join(h.decks[:2])
         extra = len(h.decks) - 2
-        where = f"  [{shown}{f'; ещё {extra}' if extra > 0 else ''}]" if h.decks else ""
+        where = f"  [{shown}{f'; +{extra} more' if extra > 0 else ''}]" if h.decks else ""
         lines.append(
             f"{h.query:<{width}} {MARK[h.status]} {meta}  {forms}{where}".rstrip()
         )
     known = sum(1 for h in hits if h.status == KNOWN)
     seen = sum(1 for h in hits if h.status == SEEN)
     missing = [h.query for h in hits if h.status == UNKNOWN]
-    lines.append(f"— в словаре {known}, встречалось в предложениях {seen}, нет {len(missing)}")
+    lines.append(f"— word card {known}, sentences only {seen}, missing {len(missing)}")
     if missing:
-        lines.append("нет: " + ", ".join(missing))
+        lines.append("missing: " + ", ".join(missing))
     return "\n".join(lines)
 
 
@@ -369,27 +369,24 @@ def format_pool(
     stale_hint: list[str] | None = None,
 ) -> str:
     if not topical and not core:
-        return "по этим фильтрам ничего нет — сними уровень или часть речи"
+        return "nothing matches these filters — drop level or pos"
     lines = []
     if topical:
-        lines.append(f"по теме ({len(topical)}): " + " · ".join(topical))
+        lines.append(f"topic ({len(topical)}): " + " · ".join(topical))
     if core:
-        label = "ещё из словаря" if topical else "словарь"
+        label = "rest of vocabulary" if topical else "vocabulary"
         lines.append(f"{label} ({len(core)}): " + " · ".join(core))
     if stale_hint:
         lines.append(
-            f"давно не встречались в новых карточках ({len(stale_hint)}): "
-            + " · ".join(stale_hint)
+            f"not used lately ({len(stale_hint)}): " + " · ".join(stale_hint)
         )
         lines.append(
-            "— подсказка для разнообразия, а не ограничение: "
-            "полный словарь выше, бери что нужно"
+            "— a nudge for variety, not a limit: the full vocabulary is above"
         )
     if dropped:
         lines.append(
-            f"⚠ обрезано пределом: {dropped} слов не показано. "
-            "Убери limit или сузь фильтром pos — иначе эти слова "
-            "никогда не попадут в примеры."
+            f"⚠ truncated by limit: {dropped} words hidden. Drop limit or "
+            "narrow with pos — otherwise these words never reach your examples."
         )
     return "\n".join(lines)
 
@@ -410,12 +407,12 @@ def format_text_check(
         ok = pct >= min_coverage or len(new) <= 1
         low += not ok
         shown = ", ".join(new) if new else "—"
-        lines.append(f"{i:<3}{pct:>4}%  {shown:<34} {'ok' if ok else 'низко'}")
+        lines.append(f"{i:<3}{pct:>4}%  {shown:<34} {'ok' if ok else 'low'}")
     avg = round(sum(r[0] for r in results) / len(results)) if results else 100
-    tail = f"покрытие в среднем {avg}%"
+    tail = f"average coverage {avg}%"
     if low:
-        tail += f" · ниже цели {min_coverage}%: {low} из {len(results)}"
+        tail += f" · below {min_coverage}%: {low} of {len(results)}"
     if candidates:
-        tail += "\nновые слова (кандидаты в следующую тему): " + ", ".join(candidates)
+        tail += "\nnew words (candidates for the next topic): " + ", ".join(candidates)
     lines.append(tail)
     return "\n".join(lines)

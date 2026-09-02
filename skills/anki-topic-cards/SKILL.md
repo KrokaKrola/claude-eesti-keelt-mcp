@@ -89,7 +89,7 @@ asking for the whole thing. Keep the two parts that don't grow:
   verbs (~180 words here). Note that `pos` also drops the ~55 word cards
   that carry no part-of-speech tag, so use it to narrow a huge palette,
   never to decide what the learner knows;
-- the **давно не встречались** line, which is a fixed 40 words whatever
+- the **not used lately** line, which is a fixed 40 words whatever
   the vocabulary size.
 
 Then rely on `text_check` as the actual guarantee — it validates against
@@ -98,7 +98,7 @@ palette is a convenience; the check is the contract.
 
 ### Rotation: reach for the words you haven't used lately
 
-`vocab_pool` ends with a line **«давно не встречались в новых карточках»** — words the learner knows well but which haven't appeared in a new card for two weeks. Use it:
+`vocab_pool` ends with a **not used lately** line — words the learner knows well but which haven't appeared in a new card for two weeks. Use it:
 
 - When you need a **content word** — a noun, an adjective, a specific verb — take it from that line before reaching elsewhere in the palette. `järv`, `külaline`, `koristama` beat inventing another sentence about `koer` and `maja`.
 - **Do not apply this to structural words.** `olema`, `meeldima`, `tegema`, `minema`, `tahtma` are missing from that line precisely because every sentence needs them. Rotating them out produces contorted Estonian, which defeats the point.
@@ -112,7 +112,7 @@ The loop closes on its own. Example sentences are indexed, so a word you use tod
 anki-vocab:text_check(sentences=[...], targets=[<the words being taught>])
 ```
 
-Always pass `targets`: those words are new by definition and must not count against coverage. Rewrite whatever comes back `низко`, leaning on the palette, then check again. **Two rounds maximum** — then report what is left rather than grinding further.
+Always pass `targets`: those words are new by definition and must not count against coverage. Rewrite whatever comes back `low`, leaning on the palette, then check again. **Two rounds maximum** — then report what is left rather than grinding further.
 
 ### If `anki-vocab` is unavailable
 
@@ -134,11 +134,11 @@ If the user says to go ahead: compose from your own knowledge of the topic, skip
 - `~` — the word has only ever appeared inside an example sentence. Counts as known, never offered in the palette.
 - `✗` — not in the collection at all.
 
-A `✓` line also shows, in square brackets, the topic(s) the word already lives in. The line is capped to keep it short — at most 3 tags, 4 forms and 2 decks; when a word lives in more topics the brackets end with `ещё N`, and the duplicate report should say so rather than pretend the list is complete:
+A `✓` line also shows, in square brackets, the topic(s) the word already lives in. The line is capped to keep it short — at most 3 tags, 4 forms and 2 decks; when a word lives in more topics the brackets end with `+N more`, and the duplicate report should say so rather than pretend the list is complete:
 
 ```
 korvpall ✓ a2 aeg,elu,liikumine  korvpall/korvpalli/korvpalliga  [09. Vaba aeg; 10. Liikumine on elu]
-ujuma    ✓ a2 aeg,vaba  ujub/ujuda/ujuma/ujumas  [08. Loomad; 09. Vaba aeg; ещё 1]
+ujuma    ✓ a2 aeg,vaba  ujub/ujuda/ujuma/ujumas  [08. Loomad; 09. Vaba aeg; +1 more]
 ```
 
 That location matters for the duplicate report below: a word already sitting in the topic being filled is a true duplicate, while the same word coming from a different topic may still be worth adding here.
@@ -149,9 +149,9 @@ Prefer words the learner already knows — that is what `vocab_pool` is for, not
 
 - The card's target word never counts; pass it in `targets`.
 - **One further new word per sentence is always fine**, whatever the coverage.
-- Beyond that, keep coverage at or above 70%. `text_check` marks anything lower as `низко`.
+- Beyond that, keep coverage at or above 70%. `text_check` marks anything lower as `low`.
 - **Never contort a sentence to hit the number.** A natural A2 sentence with two new words beats an awkward one with none. The target is a preference, not a constraint.
-- The new words are whatever the last `text_check` listed after «новые слова» — that line, and only that line, goes into the final report under «кандидаты в следующую тему». Never add words you _think_ are new: `text_check` checks the whole collection, you see one filtered slice of it, and a word you'd guess at may already have 75 cards.
+- The new words are whatever the last `text_check` listed after `new words` — that line, and only that line, goes into the final report under «кандидаты в следующую тему». Never add words you _think_ are new: `text_check` checks the whole collection, you see one filtered slice of it, and a word you'd guess at may already have 75 cards.
 
 ## Grammar rules to keep applying (condensed; full detail lives in project memory)
 
@@ -196,7 +196,7 @@ Simplicity and grounding pull the same way: short everyday clauses built from kn
 
 5. **Per word**: identify lemma + POS, derive the 3 forms from the table above, and write the example sentences/translations per the grammar and A2-simplicity rules, **composing from the palette**.
 
-6. **Validate.** One batched `anki-vocab:text_check(sentences=[all sentences you wrote], targets=[the new words])`. Rewrite anything marked `низко` and check again. Two rounds maximum.
+6. **Validate.** One batched `anki-vocab:text_check(sentences=[all sentences you wrote], targets=[the new words])`. Rewrite anything marked `low` and check again. Two rounds maximum.
 
 7. **Write the topic** with one `anki-vocab:topic_write` call:
 
@@ -212,8 +212,8 @@ Simplicity and grounding pull the same way: short everyday clauses built from kn
 
 8. **Report back in Russian**, concisely:
    - how many notes went into each deck;
-   - average coverage from `text_check`, and any sentence still marked `низко` with the reason;
-   - **кандидаты в следующую тему** — copy the «новые слова» line from the last `text_check` verbatim. If it listed nothing, write «нет». Don't extend the list from your own sense of what's new, and don't drop anything from it;
+   - average coverage from `text_check`, and any sentence still marked `low` with the reason;
+   - **кандидаты в следующую тему** — copy the `new words` line from the last `text_check` verbatim. If it listed nothing, write «нет». Don't extend the list from your own sense of what's new, and don't drop anything from it;
    - **дубли — отдельным списком, готовым к действию.** For every word set aside in step 2, give the word, its Russian meaning, the topic(s) it already lives in, and its existing forms:
 
      ```
@@ -221,7 +221,7 @@ Simplicity and grounding pull the same way: short everyday clauses built from kn
      | слово | значение | уже есть в теме | формы |
      |---|---|---|---|
      | korvpall | баскетбол | 09. Vaba aeg; 10. Liikumine on elu | korvpall/korvpalli/korvpalliga |
-     | ujuma | плавать | 08. Loomad; 09. Vaba aeg; ещё 1 | ujub/ujuda/ujuma/ujumas |
+     | ujuma | плавать | 08. Loomad; 09. Vaba aeg; +1 more | ujub/ujuda/ujuma/ujumas |
      ```
 
      Close the report by offering to add them anyway — one line, e.g. «Скажи, если всё равно нужно добавить — сделаю карточки и для них.» If the user asks for it, run the full workflow for exactly those words, skipping step 2's filter, and reuse the forms from `word_forms` so the new cards agree with the existing ones. Never add them on your own initiative: a word already in the target topic is usually a real duplicate, while the same word arriving from a different topic may be worth a second card — that is the user's call, not yours.
@@ -267,7 +267,7 @@ anki-vocab:text_check(
 1   100%  —    ok
 2   100%  —    ok
 3   100%  —    ok
-покрытие в среднем 100%
+average coverage 100%
 ```
 
 The same word written without the palette scores 40% and drags in `kärestikuline`, `nautima`, `vaikus` — three unfamiliar words around the one being taught. That sentence is unlearnable, which is the whole reason this step exists.

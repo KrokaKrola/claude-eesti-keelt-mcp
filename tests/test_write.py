@@ -133,17 +133,17 @@ def test_all_problems_reported_at_once():
     problems = exc.value.problems
     assert len(problems) == 3
     assert any("forms" in p for p in problems)
-    assert any("перевод" in p for p in problems)
+    assert any("empty 'ru'" in p for p in problems)
     assert any("pos=" in p for p in problems)
 
 
 def test_duplicate_word_in_one_batch():
-    with pytest.raises(NoteDataError, match="дважды"):
+    with pytest.raises(NoteDataError, match="appears twice"):
         build([JOGI, JOGI])
 
 
 def test_batch_cap():
-    with pytest.raises(NoteDataError, match="Раздели"):
+    with pytest.raises(NoteDataError, match="Split into several calls"):
         build([{**JOGI, "word": f"sõna{i}"} for i in range(MAX_WORDS + 1)])
 
 
@@ -162,11 +162,11 @@ def test_form_not_in_example_warns_but_does_not_block():
     batches, warnings = build([{**JOGI, "forms": ["Jõgi", "jõe", "kala"]}],
                               form_in_example=contains)
     assert len(batches[0].notes) == 1  # записи не мешает
-    assert len(warnings) == 1 and "форма 3" in warnings[0]
+    assert len(warnings) == 1 and "form 3" in warnings[0]
     assert len(seen) == 3
 
 
 def test_dry_run_touches_no_network():
     out = write_topic(COURSE, TOPIC, [JOGI], dry_run=True)
-    assert "ничего не записано" in out
+    assert "dry run, nothing written" in out
     assert "01. sõnad" in out

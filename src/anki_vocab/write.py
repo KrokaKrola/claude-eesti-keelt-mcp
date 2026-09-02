@@ -125,54 +125,54 @@ def _validate(word: dict, seen: set[str], where: str, problems: list[str]) -> di
 
     et = str(word.get("word", "")).strip()
     if not et:
-        problems.append(f"{where}: пустое поле word")
+        problems.append(f"{where}: empty 'word'")
         et = "?"
 
     key = et.lower()
     if key in seen:
-        problems.append(f"{where}: слово '{et}' в списке дважды")
+        problems.append(f"{where}: '{et}' appears twice in the list")
     seen.add(key)
 
     pos = POS_TAGS.get(str(word.get("pos", "")).strip().lower())
     if pos is None:
         problems.append(
-            f"{where} ({et}): pos='{word.get('pos')}' — ожидается одно из: "
+            f"{where} ({et}): pos='{word.get('pos')}' — expected one of: "
             + ", ".join(sorted(set(POS_TAGS.values())))
         )
 
     ru = str(word.get("ru", "")).strip()
     if not ru:
-        problems.append(f"{where} ({et}): пустой перевод ru")
+        problems.append(f"{where} ({et}): empty 'ru'")
 
     forms = word.get("forms")
     if isinstance(forms, str):
         forms = [forms]
     if not isinstance(forms, list) or not all(str(f).strip() for f in forms):
-        problems.append(f"{where} ({et}): forms — список из 3 непустых форм (или 1 для неизменяемого слова)")
+        problems.append(f"{where} ({et}): forms — 3 non-empty forms (or 1 for an invariant word)")
         forms = []
     elif len(forms) == 1:
         forms = [str(forms[0]).strip()] * 3
     elif len(forms) == 3:
         forms = [str(f).strip() for f in forms]
     else:
-        problems.append(f"{where} ({et}): forms — {len(forms)} шт., нужно 3 (или 1 для неизменяемого слова)")
+        problems.append(f"{where} ({et}): forms — got {len(forms)}, need 3 (or 1 for an invariant word)")
         forms = []
 
     raw_ex = word.get("ex")
     if isinstance(raw_ex, list) and len(raw_ex) in (1, 3):
         pairs = [_pair(p) for p in raw_ex]
         if None in pairs:
-            problems.append(f"{where} ({et}): ex — каждый пример это пара ['эстонский', 'русский'], оба непустые")
+            problems.append(f"{where} ({et}): ex — each example is a pair ['estonian', 'russian'], both non-empty")
             ex = []
         else:
             ex = pairs * 3 if len(pairs) == 1 else pairs
     else:
-        problems.append(f"{where} ({et}): ex — 3 пары ['эстонский', 'русский'] (или 1 для неизменяемого слова)")
+        problems.append(f"{where} ({et}): ex — 3 pairs ['estonian', 'russian'] (or 1 for an invariant word)")
         ex = []
 
     sentence = _pair(word.get("sentence"))
     if sentence is None:
-        problems.append(f"{where} ({et}): sentence — пара ['эстонский', 'русский'] для колоды 03")
+        problems.append(f"{where} ({et}): sentence — a pair ['estonian', 'russian'] for deck 03")
 
     if len(problems) > before:
         return None
@@ -192,12 +192,12 @@ def build_topic(
     'algama' пример идёт с 'algab'), так что блокировать по нему нельзя.
     """
     if not words:
-        raise NoteDataError(["пустой список words"])
+        raise NoteDataError(["words list is empty"])
     if len(words) > MAX_WORDS:
         raise NoteDataError(
-            [f"{len(words)} слов за раз — аддон принимает не больше {MAX_WORDS} "
-             f"(колода 02 даёт по 3 заметки на слово, потолок пачки {MAX_NOTES_PER_BATCH}). "
-             "Раздели на несколько вызовов."]
+            [f"{len(words)} words at once — the add-on takes at most {MAX_WORDS} "
+             f"(deck 02 makes 3 notes per word, batch cap {MAX_NOTES_PER_BATCH}). "
+             "Split into several calls."]
         )
 
     problems: list[str] = []
@@ -205,7 +205,7 @@ def build_topic(
     clean = [
         ok
         for i, w in enumerate(words)
-        if (ok := _validate(w if isinstance(w, dict) else {}, seen, f"слово {i + 1}", problems))
+        if (ok := _validate(w if isinstance(w, dict) else {}, seen, f"word {i + 1}", problems))
     ]
     if problems:
         raise NoteDataError(problems)
@@ -225,7 +225,7 @@ def build_topic(
         if form_in_example is not None:
             for i, (form, (et, _)) in enumerate(zip(forms, ex), start=1):
                 if not form_in_example(form, et):
-                    warnings.append(f"{w['word']}: форма {i} ({form}) не встречается в примере «{et}»")
+                    warnings.append(f"{w['word']}: form {i} ({form}) is absent from its example '{et}'")
 
         fields01 = {"Russian": w["ru"], "Add Reverse": "1"}
         for i, (form, (et, ru)) in enumerate(zip(forms, ex), start=1):
@@ -296,7 +296,7 @@ def _unwrap(body: str) -> dict:
     for line in body.splitlines():
         if line.startswith("data: "):
             return json.loads(line[6:])
-    raise AnkiError(f"аддон ответил не по протоколу: {body[:200]}")
+    raise AnkiError(f"add-on replied off-protocol: {body[:200]}")
 
 
 def call(tool: str, args: dict, timeout: float = 60.0) -> dict:
@@ -320,8 +320,8 @@ def call(tool: str, args: dict, timeout: float = 60.0) -> dict:
             body = resp.read().decode("utf-8")
     except (urllib.error.URLError, TimeoutError, OSError) as exc:
         raise AnkiError(
-            f"не достучался до аддона на {endpoint()}: {exc}. "
-            "Anki запущен? Ничего не записано."
+            f"cannot reach the add-on at {endpoint()}: {exc}. "
+            "Is Anki running? Nothing was written."
         ) from exc
 
     message = _unwrap(body)
@@ -331,13 +331,13 @@ def call(tool: str, args: dict, timeout: float = 60.0) -> dict:
     result = message.get("result", {})
     if result.get("isError"):
         text = "".join(c.get("text", "") for c in result.get("content", []))
-        raise AnkiError(f"{tool}: {text or 'аддон вернул ошибку без текста'}")
+        raise AnkiError(f"{tool}: {text or 'add-on returned an error with no text'}")
     if (structured := result.get("structuredContent")) is not None:
         return structured
     for chunk in result.get("content", []):
         if chunk.get("type") == "text":
             return json.loads(chunk["text"])
-    raise AnkiError(f"{tool}: пустой ответ")
+    raise AnkiError(f"{tool}: empty response")
 
 
 def deck_names() -> set[str]:
@@ -384,7 +384,7 @@ def _add(batch: Batch, existing: set[str]) -> tuple[int, list[str]]:
 
     created = [r for r in result.get("results", []) if r.get("status") == "created"]
     rejected = [
-        f"заметка {r['index'] + 1}: {r.get('error') or r.get('reason', 'отклонена')}"
+        f"note {r['index'] + 1}: {r.get('error') or r.get('reason', 'rejected')}"
         for r in result.get("results", [])
         if r.get("status") != "created"
     ]
@@ -418,11 +418,11 @@ def write_topic(
     lines: list[str] = []
 
     if dry_run:
-        lines.append(f"{head} — черновик, ничего не записано")
+        lines.append(f"{head} — dry run, nothing written")
         for batch in batches:
             lines.append(f"  {batch.deck.split('::')[-1]:<18} {len(batch.notes)}")
         example = batches[0].notes[0]
-        lines.append("  первая заметка 01: " + json.dumps(example, ensure_ascii=False))
+        lines.append("  first note of 01: " + json.dumps(example, ensure_ascii=False))
         return "\n".join(lines + _warning_lines(warnings))
 
     existing = deck_names()
@@ -434,18 +434,18 @@ def write_topic(
         except AnkiError as exc:
             # Дальше не идём: половина темы лучше, чем половина с дырой
             # посередине, а Ctrl+Z в Anki снимает записанное целиком.
-            lines.append(f"  {name:<18} ОШИБКА: {exc}")
-            lines.append("  остальные колоды не тронуты; записанное отменяется в Anki через Ctrl+Z")
-            return "\n".join([f"{head} — записано {total} заметок, дальше сбой"] + lines)
+            lines.append(f"  {name:<18} ERROR: {exc}")
+            lines.append("  remaining decks untouched; Ctrl+Z in Anki undoes what was written")
+            return "\n".join([f"{head} — {total} notes written, then failed"] + lines)
         total += created
         mark = "✓" if not rejected else "⚠"
         lines.append(f"  {name:<18} {created} {mark}")
         lines.extend(f"      {r}" for r in rejected)
 
-    return "\n".join([f"{head} — {total} заметок"] + lines + _warning_lines(warnings))
+    return "\n".join([f"{head} — {total} notes"] + lines + _warning_lines(warnings))
 
 
 def _warning_lines(warnings: list[str]) -> list[str]:
     if not warnings:
         return []
-    return ["", "предупреждения (записи не мешают):"] + [f"  {w}" for w in warnings]
+    return ["", "warnings (did not block the write):"] + [f"  {w}" for w in warnings]

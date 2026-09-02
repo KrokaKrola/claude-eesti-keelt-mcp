@@ -76,10 +76,10 @@ def traced(fn):
 mcp = MCPServer(
     name="anki-vocab",
     instructions=(
-        "Словарный запас пользователя из Anki (эстонский). "
-        "Перед тем как сочинять примеры, возьми палитру через vocab_pool "
-        "и строй фразы из неё; черновики проверяй через text_check. "
-        "Перед добавлением новых карточек прогоняй список через vocab_check."
+        "The learner's Estonian vocabulary from Anki. Before composing "
+        "examples, load the palette with vocab_pool and build phrases from "
+        "it; check drafts with text_check. Run new word lists through "
+        "vocab_check before creating cards."
     ),
 )
 
@@ -115,10 +115,10 @@ def _fresh() -> Vocab:
 
 @mcp.tool(
     description=(
-        "Есть ли слова в коллекции. Принимает любые формы: kübarat найдёт "
-        "kübar. ✓ — слово из словарной карточки, ~ — встречалось только "
-        "внутри предложений, ✗ — нет совсем. Используй перед созданием "
-        "карточек, чтобы не плодить дубли."
+        "Are these words already in the collection? Takes any inflected "
+        "form: kübarat finds kübar. ✓ — the word has a word card, ~ — it "
+        "only ever appeared inside example sentences, ✗ — not there at all. "
+        "Use it before creating cards so duplicates don't pile up."
     )
 )
 @traced
@@ -130,29 +130,27 @@ def vocab_check(words: list[str]) -> str:
 
 @mcp.tool(
     description=(
-        "Палитра: слова со словарных карточек пользователя — из них и "
-        "надо составлять примеры. Приходят в словарной форме, как "
-        "написано на карточке: номинатив у существительных, "
-        "ma-инфинитив у глаголов. В предложении ставь слово в ту форму, "
-        "которой требует грамматика (salli, kaela, sooja) — покрытие "
-        "считается по леммам, любая форма засчитывается. "
-        "Возвращает две группы: «по теме» (совпали по topics) и «ещё из "
-        "словаря» — самые частотные слова уровня независимо от темы. "
-        "У новой темы первая группа пустая, и это нормально: фраза "
-        "строится из ядра, тема даёт существительные. "
-        "Фильтры: level ('a1'/'a2'), topics (по ИЛИ), pos "
-        "('существительное', 'глагол', 'прилагательное', 'наречие'). "
-        "limit не передавай: по умолчанию приходит весь словарь уровня, "
-        "а любое число прячет одну и ту же его часть навсегда. Если "
-        "выдача стала слишком большой, сужай фильтром pos. "
-        "Отдельной строкой идут слова, давно не попадавшие в новые "
-        "карточки (порог — stale_days): это подсказка, чем разбавить "
-        "примеры, а не ограничение. "
-        "Важно: палитра уже того, что человек знает — слова без "
-        "словарной карточки (встречались только в предложениях) сюда не "
-        "попадают, хотя знакомыми считаются. Отсутствие слова в палитре "
-        "не значит, что оно новое; это знают только vocab_check и "
-        "text_check."
+        "The palette: words from the learner's own word cards — compose "
+        "your examples out of these. They arrive in dictionary form, as "
+        "written on the card: nominative for nouns, ma-infinitive for "
+        "verbs. In a sentence, inflect as the grammar demands (salli, "
+        "kaela, sooja) — coverage is measured by lemma, so any form counts. "
+        "Returns two groups: 'topic' (matched on topics) and 'rest of "
+        "vocabulary' — the most frequent words of that level regardless of "
+        "topic. For a new topic the first group is empty, which is normal: "
+        "the phrase is built from the core, the topic supplies the nouns. "
+        "Filters: level ('a1'/'a2'), topics (OR), pos ('существительное', "
+        "'глагол', 'прилагательное', 'наречие' — Russian, as tagged on the "
+        "cards). Do not pass limit: by default the whole vocabulary of that "
+        "level arrives, and any number hides the same part of it forever. "
+        "If the output grows too big, narrow it with pos. "
+        "A separate line lists words that have not appeared in new cards "
+        "for a while (threshold: stale_days) — a hint for variety, not a "
+        "constraint. "
+        "Note: the palette is narrower than what the learner knows — words "
+        "without a word card (met only inside sentences) never show up here "
+        "even though they count as known. Absence from the palette does not "
+        "mean a word is new; only vocab_check and text_check know that."
     )
 )
 @traced
@@ -175,15 +173,15 @@ def vocab_pool(
 
 @mcp.tool(
     description=(
-        "Проверяет черновики предложений по словарю пользователя. Для "
-        "каждого возвращает процент покрытия и незнакомые слова. "
-        "targets — целевые слова карточек: они новые по определению и "
-        "в счёт не идут, всегда их передавай. Правило мягкое: одно новое "
-        "слово допустимо всегда, дальше смотрим на покрытие "
-        "(min_coverage, по умолчанию 70%). Служебные слова, послелоги и "
-        "союзы не считаются. Помеченное «низко» перепиши, опираясь на "
-        "vocab_pool; остальные новые слова просто перечисли в отчёте "
-        "как кандидатов в следующую тему."
+        "Checks draft sentences against the learner's vocabulary. For each "
+        "one returns a coverage percentage and the unfamiliar words. "
+        "targets — the words the cards are teaching: they are new by "
+        "definition and must not count, always pass them. The rule is soft: "
+        "one new word is always fine, beyond that coverage decides "
+        "(min_coverage, 70% by default). Function words, postpositions and "
+        "conjunctions are ignored. Rewrite whatever comes back 'low' leaning "
+        "on vocab_pool; list the remaining new words in the final report as "
+        "candidates for the next topic."
     )
 )
 @traced
@@ -202,8 +200,8 @@ def text_check(
 
 @mcp.tool(
     description=(
-        "Формы слова и готовые примеры с его карточки. Нужен, чтобы "
-        "повторное добавление слова не изобретало второй вариант форм."
+        "The forms of a word and the ready examples from its card. Use it "
+        "so re-adding a word does not invent a second set of forms."
     )
 )
 @traced
@@ -212,7 +210,7 @@ def word_forms(word: str) -> str:
         vocab = _fresh()
         hit = vocab.lookup(word)
         if hit.status == UNKNOWN:
-            return f"{word}: в коллекции нет"
+            return f"{word}: not in the collection"
         rows = vocab.con.execute(
             "select e.examples from form f join entry e on e.note_id = f.note_id"
             " where f.lemma = ? and e.is_phrase = 0",
@@ -225,7 +223,7 @@ def word_forms(word: str) -> str:
             if (et, ru) not in examples:
                 examples.append((et, ru))
     out = [f"{hit.lemma} — {hit.ru or '?'} ({hit.pos or '?'}, {hit.level or '?'})"]
-    out.append("формы: " + "/".join(hit.forms))
+    out.append("forms: " + "/".join(hit.forms))
     for et, ru in examples[:3]:
         out.append(f"  {et} — {ru}")
     return "\n".join(out)
@@ -233,9 +231,10 @@ def word_forms(word: str) -> str:
 
 @mcp.tool(
     description=(
-        "Состояние темы: какие из подколод 01. sõnad / 02. sõnad typein / "
-        "03. lause typein уже существуют, сколько в них заметок и какие "
-        "слова там лежат. Заменяет перебор колод перед добавлением карточек."
+        "State of a topic: which of the subdecks 01. sõnad / 02. sõnad "
+        "typein / 03. lause typein exist, how many notes each holds and "
+        "which words are already in them. Replaces browsing decks before "
+        "adding cards."
     )
 )
 @traced
@@ -261,21 +260,21 @@ def _form_in_example(vocab: Vocab):
 
 @mcp.tool(
     description=(
-        "Записывает тему в Anki: одно слово → 5 заметок трёх подколод "
-        "(01. sõnad, 02. sõnad typein, 03. lause typein). Подписи форм, "
-        "теги, порядок заметок и создание колод сервер делает сам — "
-        "передавай только содержание. Anki должен быть запущен.\n"
-        "words — список словарей: word (эстонское слово), pos "
+        "Writes a topic into Anki: one word → 5 notes across three subdecks "
+        "(01. sõnad, 02. sõnad typein, 03. lause typein). Form labels, tags, "
+        "note order and deck creation are handled here — supply only the "
+        "content. Anki must be running.\n"
+        "words — a list of dicts: word (the Estonian word), pos "
         "('существительное'/'глагол'/'прилагательное'/'наречие'/"
-        "'местоимение'/…), ru (перевод), forms (3 формы по правилам "
-        "части речи; для неизменяемого слова достаточно одной), ex "
-        "(3 пары ['эстонский пример','перевод'], пример N показывает "
-        "форму N; для неизменяемого хватит одной пары), sentence "
-        "(пара ['новое предложение','перевод'] для колоды 03).\n"
-        "До 33 слов за вызов. Проверка идёт до записи: если данные "
-        "кривые, не создаётся ни одной заметки и приходит список всех "
-        "претензий сразу. dry_run=true показывает, что будет записано, "
-        "ничего не трогая."
+        "'местоимение'/… — Russian, as tagged on the cards), ru (the Russian "
+        "translation), forms (3 forms per the rules of that part of speech; "
+        "one form is enough for an invariant word), ex (3 pairs "
+        "['estonian example','russian'], example N shows form N; one pair is "
+        "enough for an invariant word), sentence (pair ['new sentence', "
+        "'russian'] for deck 03).\n"
+        "Up to 33 words per call. Validation runs before the write: on bad "
+        "data no note is created at all and every complaint comes back at "
+        "once. dry_run=true shows what would be written, touching nothing."
     )
 )
 @traced
@@ -294,11 +293,11 @@ def topic_write(
                 dry_run=dry_run,
             )
         except NoteDataError as exc:
-            return "не записано, поправь данные:\n" + "\n".join(
+            return "nothing written, fix the data:\n" + "\n".join(
                 f"  {p}" for p in exc.problems
             )
         except AnkiError as exc:
-            return f"не записано: {exc}"
+            return f"nothing written: {exc}"
         if not dry_run:
             ensure_fresh(_con)  # новые слова сразу видны vocab_check
     return report
@@ -306,23 +305,24 @@ def topic_write(
 
 @mcp.tool(
     description=(
-        "Ищет колоду по куску имени — когда точное написание забыто или "
-        "в нём опечатка. Читает копию коллекции, Anki для этого не нужен."
+        "Finds a deck by a fragment of its name — when the exact spelling is "
+        "forgotten or misspelled. Reads a copy of the collection, so Anki "
+        "does not need to be running."
     )
 )
 @traced
 def deck_find(pattern: str) -> str:
     needle = pattern.strip().lower()
     if not needle:
-        return "пустой запрос"
+        return "empty pattern"
     con = open_snapshot()
     try:
         hits = sorted(n for n in deck_names(con).values() if needle in n.lower())
     finally:
         con.close()
     if not hits:
-        return f"колод с «{pattern}» нет"
-    return "\n".join(hits[:40]) + (f"\n… ещё {len(hits) - 40}" if len(hits) > 40 else "")
+        return f"no deck matches '{pattern}'"
+    return "\n".join(hits[:40]) + (f"\n… +{len(hits) - 40} more" if len(hits) > 40 else "")
 
 
 def main() -> None:

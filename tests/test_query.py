@@ -131,8 +131,8 @@ def test_truncation_is_never_silent(vocab):
 
     topical, core, dropped, _ = vocab.pool(limit=1)
     assert dropped == len(vocab.pool()[1]) - 1
-    assert "обрезано" in format_pool(topical, core, dropped)
-    assert "обрезано" not in format_pool(*vocab.pool())
+    assert "truncated by limit" in format_pool(topical, core, dropped)
+    assert "truncated by limit" not in format_pool(*vocab.pool())
 
 
 def test_pool_on_unknown_topic_still_returns_core(vocab):
@@ -169,20 +169,20 @@ def test_coverage_reports_new_words(vocab):
 def test_one_new_word_is_always_allowed(vocab):
     """Жёсткий потолок ломал естественность фраз — одно новое слово ок
     независимо от покрытия."""
-    assert "низко" not in format_text_check([(20, ["lennuk"], ["a", "b"])])
+    assert "low" not in format_text_check([(20, ["lennuk"], ["a", "b"])])
 
 
 def test_low_coverage_with_several_new_words_is_flagged(vocab):
-    assert "низко" in format_text_check([(40, ["lennuk", "auto"], ["a", "b"])])
+    assert "low" in format_text_check([(40, ["lennuk", "auto"], ["a", "b"])])
 
 
 def test_good_coverage_passes_even_with_several_new(vocab):
-    assert "низко" not in format_text_check([(85, ["lennuk", "auto"], ["a"])])
+    assert "low" not in format_text_check([(85, ["lennuk", "auto"], ["a"])])
 
 
 def test_new_words_are_reported_as_candidates(vocab):
     out = format_text_check([(85, ["lennuk"], ["a"])])
-    assert "кандидаты" in out and "lennuk" in out
+    assert "candidates" in out and "lennuk" in out
 
 
 def test_target_word_does_not_spend_budget(vocab):
