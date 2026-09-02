@@ -26,6 +26,7 @@ from .query import (
     UNKNOWN,
     Vocab,
     format_check,
+    format_debt,
     format_pool,
     format_text_check,
     topic_state as _topic_state,
@@ -146,9 +147,12 @@ def vocab_check(words: list[str]) -> str:
         "cards). Do not pass limit: by default the whole vocabulary of that "
         "level arrives, and any number hides the same part of it forever. "
         "If the output grows too big, narrow it with pos. "
-        "A separate line lists words that have not appeared in new cards "
-        "for a while (threshold: stale_days) — a hint for variety, not a "
-        "constraint. "
+        "Two extra lines at the end. 'not used lately' — words that have "
+        "not appeared in new cards for a while (threshold: stale_days), a "
+        "hint for variety. 'forgotten in reviews' — words the learner keeps "
+        "failing in Anki and has not carried to a mature interval; prefer "
+        "these when you need a content word, each one buys an extra "
+        "encounter where memory is weak. Both are hints, not constraints. "
         "Note: the palette is narrower than what the learner knows — words "
         "without a word card (met only inside sentences) never show up here "
         "even though they count as known. Absence from the palette does not "
@@ -166,11 +170,48 @@ def vocab_pool(
     with _lock:
         vocab = _fresh()
         return format_pool(
-            *vocab.pool(
+            vocab.pool(
                 level=level, topics=topics, pos=pos, limit=limit,
                 stale_days=stale_days,
             )
         )
+
+
+@mcp.tool(
+    description=(
+        "Out of words to teach? This is the learner's own backlog: words "
+        "that turn up inside their example sentences but never got a card "
+        "of their own, so the forms and the meaning were never studied. "
+        "Ranked by how often they have met them, with the shortest "
+        "sentence they met it in. Returns 10 at a time; if none of them "
+        "fit, call again with offset=10, 20, … The words arrive without a "
+        "translation — there is no card to take one from."
+    )
+)
+@traced
+def vocab_debt(limit: int = 10, offset: int = 0) -> str:
+    with _lock:
+        vocab = _fresh()
+        return format_debt(vocab.debt(limit=limit, offset=offset))
+
+
+@mcp.tool(
+    description=(
+        "The learner says they already know some of the words vocab_debt "
+        "offered? Mark them here and they stop being offered — for good, "
+        "in this and every later chat. Without it the same ten words come "
+        "back every time: vocab_debt reads the index, the index is built "
+        "from Anki, and the learner's answer is nowhere in it. Takes any "
+        "form of the word. undo=true un-marks them again."
+    )
+)
+@traced
+def vocab_debt_skip(words: list[str], undo: bool = False) -> str:
+    with _lock:
+        vocab = _fresh()
+        n, total = vocab.debt_skip(words, undo=undo)
+        verb = "un-marked" if undo else "marked as known"
+        return f"{verb}: {n} · {total} words marked in total"
 
 
 @mcp.tool(

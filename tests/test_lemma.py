@@ -57,3 +57,12 @@ def test_cache_survives_second_call(lem):
     before = lem.misses
     lem.lemma("kübarat")
     assert lem.misses == before and lem.hits >= 1
+
+
+def test_proper_name_is_recognised_whatever_the_case(lem):
+    """Кэш ключуется по нижнему регистру, и раньше ответ зависел от того,
+    в каком виде слово попалось анализатору первым."""
+    lem.analyses("tallinn")  # прогреваем кэш строчным вариантом
+    assert lem.is_name("tallinn")
+    assert not lem.is_name("koer"), "нарицательное с большой буквы — не имя"
+    assert not lem.is_name("mari"), "у имени есть нарицательный разбор — оставляем"

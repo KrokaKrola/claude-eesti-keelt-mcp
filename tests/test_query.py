@@ -3,7 +3,15 @@ import sqlite3
 import pytest
 
 from anki_vocab.index import SCHEMA
-from anki_vocab.query import KNOWN, SEEN, UNKNOWN, Vocab, format_text_check
+from anki_vocab.query import (
+    KNOWN,
+    format_debt,
+    SEEN,
+    UNKNOWN,
+    Palette,
+    Vocab,
+    format_text_check,
+)
 
 
 @pytest.fixture
@@ -68,32 +76,30 @@ def test_unknown(vocab):
 
 
 def test_pool_excludes_sentence_only_words(vocab):
-    topical, core, _, _ = vocab.pool()
-    assert "kalastama" not in topical + core
-    assert "jõgi" in topical + core
+    pool = vocab.pool()
+    assert "kalastama" not in pool.topical + pool.core
+    assert "jõgi" in pool.topical + pool.core
 
 
 def test_pool_matches_underscored_topic_tags(vocab):
     """Старые темы помечены одним тегом 'kodused_tööd', новые — словами.
     Скилл считает теги из имени колоды словами, и без нормализации
     группа «по теме» у старых тем молча приезжала пустой."""
-    topical, _, _, _ = vocab.pool(topics=["kodused", "tööd"])
-    assert topical == ["lapp"]
-    assert vocab.pool(topics=["kodused_tööd"])[0] == ["lapp"]
+    assert vocab.pool(topics=["kodused", "tööd"]).topical == ["lapp"]
+    assert vocab.pool(topics=["kodused_tööd"]).topical == ["lapp"]
 
 
 def test_pool_keeps_cards_without_a_level_tag(vocab):
     """Карточка без тега уровня — всё равно выученное слово. В колоде
     '03. minu kodu' без тега лежит вся бытовая лексика."""
-    _, core, _, _ = vocab.pool(level="a2")
-    assert "laud" in core
+    assert "laud" in vocab.pool(level="a2").core
 
 
 def test_pool_shows_the_card_headword_verbatim(vocab):
     """Первое поле карточки — уже словарная форма. Лемматизация делала
     из 'Kindad' → 'kinnas', а фразовый глагол размножала по формам."""
-    topical, core, _, _ = vocab.pool()
-    palette = topical + core
+    pool = vocab.pool()
+    palette = pool.topical + pool.core
     assert "kindad" in palette and "kinnas" not in palette
     assert palette.count("kaasa elama") == 1
 
@@ -105,23 +111,23 @@ def test_pool_ignores_words_without_a_dictionary_card(vocab):
         "insert into lemma (lemma,ru,pos,level,topics,forms,n_notes,n_word_notes,"
         "strength,first_seen) values ('helistama',NULL,NULL,'a2','[]',"
         "'[\"helistage\"]',3,1,0.0,0)")
-    topical, core, _, _ = vocab.pool()
-    assert "helistama" not in topical + core
+    pool = vocab.pool()
+    assert "helistama" not in pool.topical + pool.core
     assert vocab.lookup("helistama").status in (KNOWN, SEEN)
 
 
 def test_pool_filters(vocab):
     # laud без тега уровня — показываем на любом: это выученное слово
-    assert vocab.pool(level="a1") == ([], ["kübar", "laud"], 0, [])
-    assert vocab.pool(pos="глагол") == ([], ["kaasa elama"], 0, [])
+    assert vocab.pool(level="a1") == Palette([], ["kübar", "laud"])
+    assert vocab.pool(pos="глагол") == Palette([], ["kaasa elama"])
 
 
 def test_pool_splits_topical_from_core(vocab):
     """У новой темы совпадений нет, и палитра выходила пустой —
     поэтому к теме всегда добавляется ядро."""
-    topical, core, _, _ = vocab.pool(topics=["vaba"])
-    assert topical == ["jõgi", "kaasa elama"]
-    assert "õun" in core and "kübar" in core
+    pool = vocab.pool(topics=["vaba"])
+    assert pool.topical == ["jõgi", "kaasa elama"]
+    assert "õun" in pool.core and "kübar" in pool.core
 
 
 def test_truncation_is_never_silent(vocab):
@@ -129,16 +135,16 @@ def test_truncation_is_never_silent(vocab):
     надо сказать вслух — иначе слова просто исчезают."""
     from anki_vocab.query import format_pool
 
-    topical, core, dropped, _ = vocab.pool(limit=1)
-    assert dropped == len(vocab.pool()[1]) - 1
-    assert "truncated by limit" in format_pool(topical, core, dropped)
-    assert "truncated by limit" not in format_pool(*vocab.pool())
+    cut = vocab.pool(limit=1)
+    assert cut.dropped == len(vocab.pool().core) - 1
+    assert "truncated by limit" in format_pool(cut)
+    assert "truncated by limit" not in format_pool(vocab.pool())
 
 
 def test_pool_on_unknown_topic_still_returns_core(vocab):
-    topical, core, _, _ = vocab.pool(topics=["töö", "amet"])
-    assert topical == []
-    assert len(core) == 7, "ядро должно приехать даже при нулевом совпадении"
+    pool = vocab.pool(topics=["töö", "amet"])
+    assert pool.topical == []
+    assert len(pool.core) == 7, "ядро должно приехать даже при нулевом совпадении"
 
 
 def test_pool_ranks_by_usage_then_retention(vocab):
@@ -150,7 +156,7 @@ def test_pool_ranks_by_usage_then_retention(vocab):
         "strength,first_seen) values ('üheksasajas','девятисотый',NULL,'a2','[]',"
         "'[\"üheksasajas\"]',1,1,171.0,0)")
     add_cards(vocab.con, [(106, "a2", "числительное", "[]", "Üheksasajas")])
-    _, core, _, _ = vocab.pool(limit=3)
+    core = vocab.pool(limit=3).core
     assert "üheksasajas" not in core, "лёгкое числительное не должно вытеснять рабочие слова"
     assert "jõgi" in core and "õun" in core
 
@@ -240,3 +246,133 @@ def test_lookup_separates_a_word_card_from_a_passing_mention(vocab):
         "insert into form(form,lemma,note_id,slot) values ('jõel','jõgi',2,'example')"
     )
     assert vocab.lookup("jõgi").decks == ("09. Vaba aeg 3F", "08. Loomad ex")
+
+
+# --- трудные слова и долг ------------------------------------------------
+
+
+def add_lemma(con, lemma, *, n_notes=4, n_word=4, strength=0.0, lapses=0,
+              level="a2", pos="существительное"):
+    con.execute(
+        "insert into lemma (lemma,ru,pos,level,topics,forms,n_notes,n_word_notes,"
+        "strength,lapses,first_seen) values (?,'перевод',?,?,'[]',?,?,?,?,?,0)",
+        (lemma, pos, level, f'["{lemma}"]', n_notes, n_word, strength, lapses),
+    )
+
+
+def test_weak_hint_takes_words_the_learner_keeps_failing(vocab):
+    """Срыв без интервала ничего не значит: слово могли ронять полгода
+    назад и с тех пор выучить намертво."""
+    add_lemma(vocab.con, "kestma", strength=19.1, lapses=45)
+    add_lemma(vocab.con, "ahi", strength=102.7, lapses=29)
+    add_lemma(vocab.con, "korv", strength=3.0, lapses=0)
+    add_cards(vocab.con, [(201, "a2", "глагол", "[]", "Kestma"),
+                          (202, "a2", "существительное", "[]", "Ahi"),
+                          (203, "a2", "существительное", "[]", "Korv")])
+    weak = vocab.pool().weak
+    assert "kestma" in weak
+    assert "ahi" not in weak, "интервал 103 дня — слово уже выучено"
+    assert "korv" not in weak, "новое слово ещё не трудное, оно просто новое"
+
+
+def test_weak_hint_is_ordered_by_severity(vocab):
+    """Подсказку читают сверху, поэтому алфавит здесь потерял бы сигнал."""
+    add_lemma(vocab.con, "kestma", strength=19.1, lapses=45)
+    add_lemma(vocab.con, "oskus", strength=14.5, lapses=24)
+    add_cards(vocab.con, [(201, "a2", "глагол", "[]", "Kestma"),
+                          (204, "a2", "существительное", "[]", "Oskus")])
+    assert vocab.pool().weak == ["kestma", "oskus"]
+
+
+def test_weak_hint_respects_the_palette_filters(vocab):
+    add_lemma(vocab.con, "kestma", strength=19.1, lapses=45)
+    add_cards(vocab.con, [(201, "a2", "глагол", "[]", "Kestma")])
+    assert vocab.pool(pos="существительное").weak == []
+
+
+def test_debt_lists_words_that_never_got_a_card(vocab):
+    """kalastama человек читает в чужих примерах, но форм и перевода
+    у него не учил — это и есть долг."""
+    words = [d.word for d in vocab.debt().items]
+    assert "kalastama" in words
+    assert "jõgi" not in words, "у слова есть словарная карточка"
+
+
+def test_debt_skips_function_words_and_names(vocab):
+    add_lemma(vocab.con, "ning", n_word=0, n_notes=50, pos=None)
+    add_lemma(vocab.con, "tallinn", n_word=0, n_notes=40, pos=None)
+    words = [d.word for d in vocab.debt().items]
+    assert "ning" not in words and "tallinn" not in words
+
+
+def test_debt_pages_through_the_list(vocab):
+    for i, word in enumerate(["aitama", "helistama", "jooma"]):
+        add_lemma(vocab.con, word, n_word=0, n_notes=30 - i, pos=None)
+    first = vocab.debt(limit=2)
+    assert [d.word for d in first.items] == ["aitama", "helistama"]
+    assert first.more, "страница неполной не бывает молча"
+    second = vocab.debt(limit=2, offset=2)
+    assert "aitama" not in [d.word for d in second.items]
+    assert [d.word for d in second.items][0] == "jooma"
+
+
+def test_debt_shows_where_the_word_was_met(vocab):
+    """Голое слово ничего не напоминает — решает узнавание контекста."""
+    add_lemma(vocab.con, "vihma", n_word=0, n_notes=5, pos=None)
+    vocab.con.execute(
+        "insert into entry (note_id,notetype,deck,topics,ru,headword,et_raw,"
+        "examples,is_phrase,mod) values (9,'Estonian 3 Forms','колода','[]',"
+        "'дождь','x','x','[[\"Väljas sajab vihma.\",\"На улице дождь.\"]]',0,0)"
+    )
+    vocab.con.execute(
+        "insert into form(form,lemma,note_id,slot) values ('vihma','vihma',9,'example')"
+    )
+    assert vocab.debt().items[0].example == "Väljas sajab vihma."
+
+
+def test_debt_bounds_are_pulled_back_into_range(vocab):
+    """limit=0 отвечал «слов больше нет» при полном списке — это читается
+    как «долгов нет». Отрицательное смещение печатало страницу с «#-4»."""
+    for word in ["aitama", "helistama", "jooma"]:
+        add_lemma(vocab.con, word, n_word=0, n_notes=30, pos=None)
+    assert len(vocab.debt(limit=0).items) == 1
+    assert vocab.debt(offset=-5).offset == 0
+    assert "#-" not in format_debt(vocab.debt(offset=-5))
+
+
+def test_debt_page_has_a_ceiling(vocab):
+    """Инструмент отдаёт limit наружу, а 400 слов — это 8k токенов
+    одним ответом, при том что смысл проекта — экономия контекста."""
+    from anki_vocab.query import DEBT_PAGE_MAX
+
+    for i in range(DEBT_PAGE_MAX + 20):
+        add_lemma(vocab.con, f"sõna{i}", n_word=0, n_notes=30, pos=None)
+    assert len(vocab.debt(limit=400).items) == DEBT_PAGE_MAX
+
+
+def test_debt_ignores_words_carded_outside_the_index(vocab):
+    """Ветка A1 из области видимости исключена, но карточки там настоящие.
+    Без этой проверки инструмент уверял, что laps и koer никогда не учили."""
+    add_lemma(vocab.con, "koer", n_word=0, n_notes=90, pos=None)
+    assert "koer" in [d.word for d in vocab.debt().items]
+    vocab.con.execute("insert into outside(lemma) values ('koer')")
+    assert "koer" not in [d.word for d in vocab.debt().items]
+
+
+def test_known_words_stay_dismissed(vocab):
+    """Иначе в новом чате приезжает ровно тот же десяток: ответа человека
+    в коллекции нет и взяться ему неоткуда."""
+    add_lemma(vocab.con, "hakkama", n_word=0, n_notes=90, pos=None)
+    assert vocab.debt_skip(["hakkama"]) == (1, 1)
+    assert "hakkama" not in [d.word for d in vocab.debt().items]
+    assert vocab.debt().skipped == 1
+    assert vocab.debt_skip(["hakkama"], undo=True) == (1, 0)
+    assert "hakkama" in [d.word for d in vocab.debt().items]
+
+
+def test_dismissal_takes_any_form_of_the_word(vocab):
+    """Человек отвечает тем словом, которое увидел, но может и
+    словоформой из примера."""
+    add_lemma(vocab.con, "pere", n_word=0, n_notes=90, pos=None)
+    vocab.debt_skip(["Pered"])
+    assert "pere" not in [d.word for d in vocab.debt().items]

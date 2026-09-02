@@ -5,11 +5,11 @@ description: Add Estonian A2 vocabulary straight into Anki via the anki-vocab MC
 
 # Anki Topic Cards (direct MCP, 3 subdecks)
 
-Captures the exact workflow already validated on real topics (07. Aias, 08. Loomad, 09. Vaba aeg, …). Everything about the format below is already known — don't spend tool calls re-deriving it from old cards. To find out what a topic already contains, use `anki-vocab:topic_state`; to find out whether a word is already in the collection, use `anki-vocab:vocab_check`; to find a deck whose exact name you don't remember, `anki-vocab:deck_find`.
+Captures the exact workflow already validated on real topics (07. Aias, 08. Loomad, 09. Vaba aeg, …). Everything about the format below is already known — don't spend tool calls re-deriving it from old cards. To find out what a topic already contains, use `anki-vocab:topic_state`; to find out whether a word is already in the collection, use `anki-vocab:vocab_check`; to find a deck whose exact name you don't remember, `anki-vocab:deck_find`; if the user has no word list of their own, `anki-vocab:vocab_debt`.
 
 ## One MCP server
 
-Everything goes through `anki-vocab`: `vocab_check`, `vocab_pool`, `text_check`, `word_forms`, `topic_state`, `deck_find` for reading, `topic_write` for writing.
+Everything goes through `anki-vocab`: `vocab_check`, `vocab_pool`, `text_check`, `word_forms`, `topic_state`, `deck_find`, `vocab_debt` for reading, `topic_write` and `vocab_debt_skip` for writing.
 
 Reading works off a local index built from a copy of the collection, so it needs nothing running. Writing is passed on to the Anki add-on behind the scenes, so **`topic_write` needs Anki open** — if it isn't, the call comes back saying so and nothing is written.
 
@@ -96,15 +96,40 @@ Then rely on `text_check` as the actual guarantee — it validates against
 the entire vocabulary regardless of what the palette showed you. The
 palette is a convenience; the check is the contract.
 
-### Rotation: reach for the words you haven't used lately
+### Two hint lines: reach for weak words first, then for unused ones
 
-`vocab_pool` ends with a **not used lately** line — words the learner knows well but which haven't appeared in a new card for two weeks. Use it:
+`vocab_pool` ends with two extra lines, and they answer different questions.
 
-- When you need a **content word** — a noun, an adjective, a specific verb — take it from that line before reaching elsewhere in the palette. `järv`, `külaline`, `koristama` beat inventing another sentence about `koer` and `maja`.
-- **Do not apply this to structural words.** `olema`, `meeldima`, `tegema`, `minema`, `tahtma` are missing from that line precisely because every sentence needs them. Rotating them out produces contorted Estonian, which defeats the point.
-- The line is a preference, not a filter: the full vocabulary sits above it, and nothing is hidden.
+**`forgotten in reviews`** — words the learner keeps failing in Anki and has
+not carried to a mature interval (21 days). This is the memory signal, and it
+outranks everything else here: a sentence built around such a word is an extra
+encounter exactly where recall is breaking down, and it costs nothing, since
+the word is known by definition. The line is ordered hardest first — take from
+the top.
 
-The loop closes on its own. Example sentences are indexed, so a word you use today stops being "stale" and drops off the hint for the next two weeks — the next topic gets a different suggestion list without anyone tracking anything.
+**`not used lately`** — words the learner knows well but which haven't appeared
+in a new card for two weeks. This is a variety signal, not a memory one: it
+keeps every topic from being another sentence about `koer` and `maja`.
+
+So when you need a **content word** — a noun, an adjective, a specific verb —
+try `forgotten in reviews` first, `not used lately` second, and the rest of the
+palette after that.
+
+- **Do not apply either line to structural words.** `olema`, `meeldima`,
+  `tegema`, `minema`, `tahtma` are missing from them precisely because every
+  sentence needs them. Rotating them out produces contorted Estonian, which
+  defeats the point.
+- Both lines are a preference, not a filter: the full vocabulary sits above
+  them, and nothing is hidden.
+- Don't force it. One weak word per sentence, where it fits naturally, is the
+  whole idea; three of them crammed together gives an unreadable sentence,
+  and an unreadable sentence teaches nothing.
+
+The variety loop closes on its own. Example sentences are indexed, so a word
+you use today stops being "stale" and drops off that hint for the next two
+weeks. The weak line closes differently and more slowly: it clears when the
+learner's own reviews start going well, which is the point of putting the word
+back in front of them.
 
 **After drafting**, validate every sentence you wrote — Ex1/Ex2/Ex3 of deck 01 and the deck-03 sentence — with one batched call:
 
@@ -162,6 +187,47 @@ Prefer words the learner already knows — that is what `vocab_pool` is for, not
 - **Never contort a sentence to hit the number.** A natural A2 sentence with two new words beats an awkward one with none. The target is a preference, not a constraint.
 - The new words are whatever the last `text_check` listed after `new words` — that line, and only that line, goes into the final report under «кандидаты в следующую тему». Never add words you _think_ are new: `text_check` checks the whole collection, you see one filtered slice of it, and a word you'd guess at may already have 75 cards.
 
+## When the user has no word list of their own
+
+Sometimes the request is «нужны слова, придумай сам». Don't invent from a
+frequency list — the learner has a backlog of their own:
+
+```
+anki-vocab:vocab_debt()
+```
+
+It returns 10 words that turn up **inside their example sentences but never
+got a card of their own**, ranked by how often they have met them, each with
+the shortest sentence they met it in. These are words read on every review
+whose forms and meaning were never actually studied — `laps`, `päev`, `sõber`
+sit near the top here, and none of them has a three-forms card.
+
+If none of the ten fit the topic, page on: `vocab_debt(offset=10)`, then 20,
+and so on. Show the user the list and let them pick before writing anything —
+these are suggestions, not an assignment. The words arrive without a
+translation (there is no card to take one from), so supply it yourself and
+flag it in the report as usual.
+
+**When the user says they already know some of them, mark those words:**
+
+```
+anki-vocab:vocab_debt_skip(words=["hakkama", "tihti"])
+```
+
+Do this every time it happens, in the same turn. The tool reads the index and
+the index is built from Anki, where the user's answer does not exist — so
+without the mark the very same ten words come back in the next chat, and in
+every chat after that. The mark is permanent and survives index rebuilds;
+`undo=true` takes it back if something was marked by mistake.
+
+The list already skips words that have a card in a deck the index does not
+cover (the old A1 branch), so a basic word turning up here means it really has
+no card — but the learner is still the judge of whether it is worth one.
+
+Note that `vocab_debt` and `text_check`'s `new words` line are opposite ends of
+the same thing: `new words` is what the learner has never met, `vocab_debt` is
+what they meet constantly and never learned.
+
 ## Grammar rules to keep applying (condensed; full detail lives in project memory)
 
 - Total vs. partial object: bounded/completed action → genitive singular (or nom. plural) object; ongoing/indefinite/negated action → partitive.
@@ -189,7 +255,7 @@ Simplicity and grounding pull the same way: short everyday clauses built from kn
 
 ## Workflow
 
-1. **Gather inputs.** The word list (Estonian; may include inflected forms; translations optional) and the target topic (a full deck path, or just a bare topic name/number against the default course root). If proceeding on an ambiguous topic name, state the assumed full path rather than asking, unless the ambiguity is severe.
+1. **Gather inputs.** The word list (Estonian; may include inflected forms; translations optional) — or, if the user has none, `anki-vocab:vocab_debt()` and let them pick — and the target topic (a full deck path, or just a bare topic name/number against the default course root). If proceeding on an ambiguous topic name, state the assumed full path rather than asking, unless the ambiguity is severe.
 
 2. **Dedupe.** One `anki-vocab:vocab_check(words=[...])` call on the whole incoming list. It matches any inflected form, so `kübarat` finds `kübar`.
 

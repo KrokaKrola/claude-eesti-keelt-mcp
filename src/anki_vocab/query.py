@@ -11,7 +11,7 @@ from __future__ import annotations
 import json
 import sqlite3
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from .config import FUNCTION_WORDS
 from .lemma import Lemmatizer
@@ -50,6 +50,46 @@ SLOT_MARK = {
     "example": "ex",                              # только внутри примера
 }
 MARK_ORDER = ["3F", "ty", "other", "ex"]
+
+# Потолок страницы долга. Смысл проекта — экономия контекста, а инструмент
+# отдаёт limit наружу: 400 слов — это 8k токенов одним ответом.
+DEBT_PAGE_MAX = 50
+
+
+@dataclass
+class Palette:
+    """Выдача vocab_pool. Полей уже пять, и позиционный кортеж на месте
+    вызова читался как (a, b, _, _)."""
+
+    topical: list[str]
+    core: list[str]
+    dropped: int = 0
+    stale: list[str] = field(default_factory=list)
+    weak: list[str] = field(default_factory=list)
+
+
+@dataclass
+class Debt:
+    """Слово, которое человек читает в своих же примерах, но карточки
+    ему так и не завёл."""
+
+    word: str
+    times: int
+    example: str | None = None
+
+
+@dataclass
+class DebtPage:
+    """Страница долга вместе со смещением, с которого её печатать.
+
+    Смещение отдаём наружу, а не берём у вызывающего: границы вправляются
+    внутри, и с сырым offset=-5 нумерация уехала бы в «#-4».
+    """
+
+    items: list[Debt]
+    offset: int = 0
+    more: bool = False
+    skipped: int = 0
 
 
 @dataclass
@@ -162,8 +202,10 @@ class Vocab:
         limit: int | None = None,
         stale_days: int = 14,
         stale_hint: int = 40,
-    ) -> tuple[list[str], list[str], int, list[str]]:
-        """(слова по теме, ядро, отброшено пределом, подсказка).
+        weak_hint: int = 30,
+        mature_ivl: int = 21,
+    ) -> Palette:
+        """Слова по теме, ядро, и две подсказки — забытые и залежавшиеся.
 
         Палитра — первые поля словарных карточек, как их написал человек:
         номинатив у существительных, ma-инфинитив у глаголов. Через
@@ -192,10 +234,16 @@ class Vocab:
         слова этого уровня независимо от темы. Из ядра и строится
         обычная фраза, тема даёт существительные.
 
-        Четвёртым идёт подсказка: ходовые слова, которые давно не попадали
-        в новые карточки. Не исключаем ничего — просто показываем, чем
-        разбавить. Исключать «свежие» слова нельзя: в этой корзине сидят
-        olema, meeldima, tegema, без которых фразу не построишь.
+        Дальше идут две подсказки, и они отвечают на разные вопросы.
+        «Давно не использовал» — ходовые слова, которые давно не попадали
+        в новые карточки; это про однообразие примеров. «Трудные» —
+        слова, которые человек на повторах забывал и до зрелого интервала
+        так и не довёл; это про его память, и новое предложение с таким
+        словом даёт лишнюю встречу ровно там, где она нужна.
+
+        Не исключаем ничего — просто показываем, чем разбавить. Исключать
+        «свежие» слова нельзя: в этой корзине сидят olema, meeldima,
+        tegema, без которых фразу не построишь.
         """
         marks = ",".join("?" * len(WORD_CARD_NOTETYPES))
         sql = [f"select headword, topics from entry where notetype in ({marks})"]
@@ -233,15 +281,15 @@ class Vocab:
         # не годится: наверх всплывают порядковые числительные вроде
         # «üheksasajas» — они лёгкие, поэтому интервал огромный, но фразу
         # из них не построишь.
+        blank = (0, 0.0, 0, None)
         meta = {
-            lemma: (n_notes, strength, last_used)
-            for lemma, n_notes, strength, last_used in self.con.execute(
-                "select lemma, n_notes, strength, last_used from lemma"
+            lemma: (n_notes, strength, lapses, last_used)
+            for lemma, n_notes, strength, lapses, last_used in self.con.execute(
+                "select lemma, n_notes, strength, lapses, last_used from lemma"
             )
         }
         ranked = sorted(
-            seen, key=lambda w: (-meta.get(w, (0, 0.0, None))[0],
-                                 -meta.get(w, (0, 0.0, None))[1], w)
+            seen, key=lambda w: (-meta.get(w, blank)[0], -meta.get(w, blank)[1], w)
         )
 
         wanted = _tag_words(topics or [])
@@ -250,18 +298,49 @@ class Vocab:
         stale: list[tuple[int, str]] = []
         for word in ranked:
             (topical if wanted & seen[word] else rest).append(word)
-            n_notes, _, last_used = meta.get(word, (0, 0.0, None))
+            n_notes, _, _, last_used = meta.get(word, blank)
             if last_used and last_used < cutoff:
                 stale.append((n_notes, word))
         stale.sort(key=lambda x: (-x[0], x[1]))
         hint = sorted(word for _, word in stale[:stale_hint])
+        weak = self._weak(ranked, meta, weak_hint, mature_ivl)
 
         if limit is None:
-            return sorted(topical), sorted(rest), 0, hint
+            return Palette(sorted(topical), sorted(rest), 0, hint, weak)
         kept_topical = topical[:limit]
         kept_core = rest[: max(0, limit - len(kept_topical))]
         dropped = (len(topical) - len(kept_topical)) + (len(rest) - len(kept_core))
-        return sorted(kept_topical), sorted(kept_core), dropped, hint
+        return Palette(
+            sorted(kept_topical), sorted(kept_core), dropped, hint, weak
+        )
+
+    def _weak(
+        self, ranked: list[str], meta: dict, want: int, mature_ivl: int
+    ) -> list[str]:
+        """Слова, которые человек забывал и до зрелого интервала не довёл.
+
+        Срыв без интервала бесполезен: слово можно было ронять полгода
+        назад и с тех пор выучить намертво (ahi — 29 срывов и интервал
+        103 дня). Порог зрелости берём у самого Anki — 21 день.
+
+        Порядок — по тяжести, самое проблемное первым: подсказка нужна,
+        чтобы с неё брали сверху. Алфавит здесь потерял бы весь сигнал.
+
+        Служебные слова отсеиваем на выходе, а не по всему словарю:
+        разбор стоит вызова морфологии, а нужно из него слов тридцать.
+        """
+        candidates = sorted(
+            (w for w in ranked if meta.get(w, (0, 0.0, 0, None))[2] >= 1
+             and meta[w][1] < mature_ivl),
+            key=lambda w: (-meta[w][2], meta[w][1], w),
+        )
+        out: list[str] = []
+        for word in candidates:
+            if len(out) >= want:
+                break
+            if not self._is_function(word):
+                out.append(word)
+        return out
 
     # --- покрытие --------------------------------------------------------
     def _is_function(self, word: str) -> bool:
@@ -302,6 +381,116 @@ class Vocab:
             [w for w in content if self.lookup(w).status == UNKNOWN]
         )
         return round(100 * covered / len(content)), unknown, content
+
+
+    # --- долг: слова без своей карточки -----------------------------------
+    def _sample(self, lemma: str, cap: int = 80) -> str | None:
+        """Самое короткое предложение, где слово попадалось. Голое слово
+        без контекста ничего не напоминает — а именно узнавание («а, вот
+        оно откуда») и решает, брать его в тему или нет."""
+        best: str | None = None
+        for form, examples, et_raw, is_phrase in self.con.execute(
+            "select f.form, e.examples, e.et_raw, e.is_phrase from form f"
+            " join entry e on e.note_id = f.note_id where f.lemma = ?",
+            (lemma,),
+        ):
+            texts = [et for et, _ru in json.loads(examples)]
+            if is_phrase:
+                texts.append(et_raw)
+            for text in texts:
+                if form.lower() in text.lower() and (
+                    best is None or len(text) < len(best)
+                ):
+                    best = text
+        if best and len(best) > cap:
+            best = best[: cap - 1].rstrip() + "…"
+        return best
+
+    def debt_skip(self, words: list[str], undo: bool = False) -> tuple[int, int]:
+        """«Это я знаю» — чтобы слово больше не предлагалось.
+
+        Иначе в новом чате приезжает ровно тот же десяток: инструмент
+        читает индекс, индекс собран из Anki, а ответа человека там нет
+        и взяться ему неоткуда.
+
+        Слово приводим к лемме: человек отвечает тем словом, которое
+        увидел, но ответить он может и словоформой из примера.
+        """
+        keys = set()
+        for word in words:
+            low = word.strip().lower()
+            if not low:
+                continue
+            known = self.con.execute(
+                "select 1 from lemma where lemma = ?", (low,)
+            ).fetchone()
+            keys.add(low if known else self.lem.lemma(low))
+        if not keys:
+            return 0, self.con.execute(
+                "select count(*) from debt_skip"
+            ).fetchone()[0]
+        marks = ",".join("?" * len(keys))
+        if undo:
+            self.con.execute(
+                f"delete from debt_skip where lemma in ({marks})", tuple(keys)
+            )
+        else:
+            self.con.executemany(
+                "insert or replace into debt_skip(lemma, added) values (?, ?)",
+                [(k, int(time.time())) for k in keys],
+            )
+        self.con.commit()
+        total = self.con.execute("select count(*) from debt_skip").fetchone()[0]
+        return len(keys), total
+
+    def debt(self, limit: int = 10, offset: int = 0) -> DebtPage:
+        """Слова, встреченные только внутри чужих предложений.
+
+        Человек читает их на каждом повторе, но карточки у них нет —
+        значит, ни форм, ни перевода он не учил. Это готовый список
+        «чего добавить», причём из собственного материала, а не из
+        частотного словаря вообще.
+
+        Порядок — по числу встреч: чем чаще слово мозолит глаза, тем
+        обиднее, что оно не выучено.
+
+        Отбор идёт сверху и ровно до нужной страницы: разбор служебных
+        слов стоит вызова морфологии, а страниц человек листает две-три.
+        Отсюда же и ответ «есть ли ещё» — берём на одно слово больше.
+
+        Границы вправляем молча, и это не то же самое, что предел
+        палитры. Там срез прятал часть словаря навсегда, и о нём надо
+        было кричать; здесь следующая страница в одном вызове, а нижняя
+        строка и так говорит, что список не кончился. Молча пустой ответ
+        на limit=0 был бы куда хуже: он читается как «долгов нет».
+        """
+        limit = max(1, min(limit, DEBT_PAGE_MAX))
+        offset = max(0, offset)
+        picked: list[tuple[str, int]] = []
+        need = offset + limit + 1
+        for lemma, n_notes in self.con.execute(
+            # Карточка вне области видимости — всё равно карточка: в ветке
+            # A1 у laps, koer и sõber она есть, и без этого условия
+            # инструмент уверял, что человек их никогда не учил.
+            "select lemma, n_notes from lemma where n_word_notes = 0"
+            " and lemma not in (select lemma from outside)"
+            " and lemma not in (select lemma from debt_skip)"
+            " order by n_notes desc, lemma"
+        ):
+            if len(picked) >= need:
+                break
+            if len(lemma) < 2 or " " in lemma:
+                continue
+            if self._is_function(lemma) or self.lem.is_name(lemma):
+                continue
+            picked.append((lemma, n_notes))
+        page = picked[offset : offset + limit]
+        return DebtPage(
+            [Debt(w, n, self._sample(w)) for w, n in page],
+            offset,
+            len(picked) > offset + limit,
+            self.con.execute("select count(*) from debt_skip").fetchone()[0],
+        )
 
 
 SUBDECKS = ("01. sõnad", "02. sõnad typein", "03. lause typein")
@@ -390,12 +579,8 @@ def format_check(hits: list[Hit]) -> str:
     return "\n".join(lines)
 
 
-def format_pool(
-    topical: list[str],
-    core: list[str],
-    dropped: int = 0,
-    stale_hint: list[str] | None = None,
-) -> str:
+def format_pool(p: Palette) -> str:
+    topical, core, dropped = p.topical, p.core, p.dropped
     if not topical and not core:
         return "nothing matches these filters — drop level or pos"
     lines = []
@@ -404,9 +589,18 @@ def format_pool(
     if core:
         label = "rest of vocabulary" if topical else "vocabulary"
         lines.append(f"{label} ({len(core)}): " + " · ".join(core))
-    if stale_hint:
+    if p.weak:
         lines.append(
-            f"not used lately ({len(stale_hint)}): " + " · ".join(stale_hint)
+            f"forgotten in reviews, hardest first ({len(p.weak)}): "
+            + " · ".join(p.weak)
+        )
+        lines.append(
+            "— these the learner keeps failing: a content word taken from "
+            "here buys an extra encounter where memory is actually weak"
+        )
+    if p.stale:
+        lines.append(
+            f"not used lately ({len(p.stale)}): " + " · ".join(p.stale)
         )
         lines.append(
             "— a nudge for variety, not a limit: the full vocabulary is above"
@@ -443,4 +637,38 @@ def format_text_check(
     if candidates:
         tail += "\nnew words (candidates for the next topic): " + ", ".join(candidates)
     lines.append(tail)
+    return "\n".join(lines)
+
+
+def format_debt(page: DebtPage) -> str:
+    items, offset = page.items, page.offset
+    if not items:
+        return (
+            "no words left in the debt list"
+            + (f" past #{offset}" if offset else "")
+        )
+    lines = [
+        "met only inside example sentences — no card of their own, "
+        "so the forms and the meaning were never learned:"
+    ]
+    width = max(len(i.word) for i in items)
+    for n, item in enumerate(items, start=offset + 1):
+        # Теги тут не показываем: это теги чужой карточки, в примере
+        # которой слово попалось мимоходом, — про само слово они не
+        # говорят ничего, а строку удлиняют. Контекст даёт предложение.
+        seen_in = f"  {item.example}" if item.example else ""
+        lines.append(
+            f"{n:>3}. {item.word:<{width}} {item.times:>4}×{seen_in}".rstrip()
+        )
+    lines.append(
+        f"next page: vocab_debt(offset={offset + len(items)})"
+        if page.more
+        else "— end of the list"
+    )
+    # Про механизм отметок говорим в самой выдаче: без этого тот же
+    # десяток приезжает в каждом новом чате, и никто не догадается почему.
+    tail = "say vocab_debt_skip(words=[…]) for any the learner already knows"
+    if page.skipped:
+        tail += f" · {page.skipped} already marked known"
+    lines.append("— " + tail)
     return "\n".join(lines)
