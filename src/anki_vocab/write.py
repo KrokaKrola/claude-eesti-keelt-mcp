@@ -299,13 +299,12 @@ def _unwrap(body: str) -> dict:
     raise AnkiError(f"add-on replied off-protocol: {body[:200]}")
 
 
-def call(tool: str, args: dict, timeout: float = 60.0) -> dict:
-    """Вызов инструмента аддона. Ошибки переводим в понятную строку —
+def rpc(method: str, params: dict, timeout: float = 60.0) -> dict:
+    """Запрос к аддону по JSON-RPC. Ошибки переводим в понятную строку —
     модель увидит её вместо стектрейса и сможет сказать пользователю,
     что делать."""
     payload = json.dumps(
-        {"jsonrpc": "2.0", "id": 1, "method": "tools/call",
-         "params": {"name": tool, "arguments": args}}
+        {"jsonrpc": "2.0", "id": 1, "method": method, "params": params}
     ).encode()
     request = urllib.request.Request(
         endpoint(),
@@ -326,12 +325,18 @@ def call(tool: str, args: dict, timeout: float = 60.0) -> dict:
 
     message = _unwrap(body)
     if "error" in message:
-        raise AnkiError(f"{tool}: {message['error'].get('message', message['error'])}")
+        raise AnkiError(f"{method}: {message['error'].get('message', message['error'])}")
+    return message.get("result", {})
 
-    result = message.get("result", {})
+
+def call(tool: str, args: dict, timeout: float = 60.0) -> dict:
+    """Вызов инструмента аддона."""
+    result = rpc("tools/call", {"name": tool, "arguments": args}, timeout)
     if result.get("isError"):
         text = "".join(c.get("text", "") for c in result.get("content", []))
         raise AnkiError(f"{tool}: {text or 'add-on returned an error with no text'}")
+    # structuredContent и content дублируют друг друга — берём то, что
+    # уже разобрано, и лишнюю копию дальше не тащим.
     if (structured := result.get("structuredContent")) is not None:
         return structured
     for chunk in result.get("content", []):

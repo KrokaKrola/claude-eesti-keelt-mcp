@@ -30,6 +30,7 @@ from .query import (
     format_text_check,
     topic_state as _topic_state,
 )
+from .passthrough import catalog, describe, invoke, names
 from .write import AnkiError, NoteDataError, write_topic
 
 # Пишем только своим логгером и не через root: иначе на уровне DEBUG
@@ -324,6 +325,48 @@ def deck_find(pattern: str) -> str:
     if not hits:
         return f"no deck matches '{pattern}'"
     return "\n".join(hits[:40]) + (f"\n… +{len(hits) - 40} more" if len(hits) > 40 else "")
+
+
+@mcp.tool(
+    description=(
+        "Catalogue of the Anki add-on's tools — everything this server does "
+        "not do itself: deleting and editing notes, finding notes by query, "
+        "decks, note types and templates, card scheduling (due, suspend, "
+        "bury, flags, FSRS), media files, driving the Anki GUI, and syncing "
+        "to AnkiWeb. Their schemas are not preloaded (they cost ~15k tokens), "
+        "so look them up here first. No pattern: the list of names. With a "
+        "pattern (a name or a keyword): the full schema of the matching "
+        "tools, ready to pass to anki_call. Works with Anki closed from a "
+        "cached list."
+    )
+)
+@traced
+def anki_tools(pattern: str = "") -> str:
+    try:
+        tools, source = catalog()
+    except AnkiError as exc:
+        return f"{exc}"
+    if not pattern.strip():
+        return f"[{source}] {len(tools)} add-on tools:\n{names(tools)}\n" \
+               "anki_tools('<name or keyword>') for a schema"
+    return describe(tools, pattern, source)
+
+
+@mcp.tool(
+    description=(
+        "Runs one tool of the Anki add-on. Look its exact name and arguments "
+        "up with anki_tools first — guessing them wastes a round trip. Anki "
+        "must be running. For adding topic cards use topic_write instead: it "
+        "is built for that and needs no lookup."
+    )
+)
+@traced
+def anki_call(tool: str, args: dict | None = None) -> str:
+    try:
+        tools, _ = catalog()
+    except AnkiError as exc:
+        return f"{exc}"
+    return invoke(tools, tool, args)
 
 
 def main() -> None:
