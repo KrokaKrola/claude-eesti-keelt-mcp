@@ -24,7 +24,7 @@ import urllib.error
 import urllib.request
 from typing import Any, Callable
 
-from .config import ADDON_META, POS_TAGS
+from .config import ADDON_META, NEW_EVERY, NEW_MAX, POS_TAGS
 
 SUBDECKS = ("01. sõnad", "02. sõnad typein", "03. lause typein")
 MODEL_WORD = "Estonian 3 Forms"
@@ -49,6 +49,38 @@ VERB_LABELS = (
 # Склоняются как существительное. Остальное либо спрягается (глагол),
 # либо не меняется вовсе и подписи форм не получает.
 NOUN_LIKE = {"существительное", "прилагательное", "местоимение", "числительное"}
+
+
+@dataclasses.dataclass
+class Dose:
+    """Сколько нового реально уехало в предложения колоды 03.
+
+    Единственное место, где дозу вообще видно. text_check её посчитать
+    не может: он получает плоский список предложений и не знает, какие
+    из них колоды 03, — а доза живёт только там.
+    """
+
+    # Считали ли дозу вообще: без закрытия из server.py (тесты, чистая
+    # сборка заметок) пустой список новых слов означает «не смотрели», а
+    # не «модель ничего не положила».
+    counted: bool = False
+    words: int = 0
+    expected: int = 0
+    new: list[str] = dataclasses.field(default_factory=list)
+    half: list[str] = dataclasses.field(default_factory=list)
+    # Предложения с двумя новыми словами разом: два неизвестных в фразе,
+    # которую человек переводит сам, — ровно та трудность, которой доза
+    # и старается избежать.
+    crowded: list[str] = dataclasses.field(default_factory=list)
+
+    @property
+    def short(self) -> bool:
+        return len(self.new) < self.expected
+
+
+def expected_dose(n_words: int) -> int:
+    """Сколько новых слов ждём от темы в n_words слов."""
+    return min(max(1, n_words // NEW_EVERY), NEW_MAX) if n_words else 0
 
 
 class AnkiError(RuntimeError):
@@ -184,8 +216,9 @@ def build_topic(
     topic: str,
     words: list[dict],
     form_in_example: Callable[[str, str], bool] | None = None,
-) -> tuple[list[Batch], list[str]]:
-    """Слова → три пачки заметок и список предупреждений.
+    novel_words: Callable[[str, set[str]], tuple[list[str], list[str]]] | None = None,
+) -> tuple[list[Batch], list[str], Dose]:
+    """Слова → три пачки заметок, предупреждения и отчёт о дозе.
 
     Предупреждение — не отказ: 4% словарных карточек в коллекции уже
     нарушают правило «пример содержит форму» вполне законно (у глагола
@@ -213,6 +246,14 @@ def build_topic(
     shared = [t for t in (level_tag(course),) if t] + topic_words(topic)
     root = f"{course}::{topic}"
     warnings: list[str] = []
+    dose = Dose(
+        counted=novel_words is not None,
+        words=len(clean),
+        expected=expected_dose(len(clean)),
+    )
+    # Слова самой темы новыми не считаются: их сейчас и учат. Лемму из
+    # них делает вызывающий — здесь про морфологию ничего не знают.
+    taught = {w["word"].strip().lower() for w in clean}
 
     notes01: list[dict] = []
     notes02: list[dict] = []
@@ -251,6 +292,12 @@ def build_topic(
             })
 
         et, ru = w["sentence"]
+        if novel_words is not None:
+            new, half = novel_words(et, taught)
+            dose.new.extend(x for x in new if x not in dose.new)
+            dose.half.extend(x for x in half if x not in dose.half)
+            if len(new) > 1:
+                dose.crowded.append(et)
         notes03.append({
             "fields": {
                 "Russian": ru,
@@ -267,7 +314,7 @@ def build_topic(
         Batch(f"{root}::{SUBDECKS[1]}", MODEL_TYPEIN, notes02),
         Batch(f"{root}::{SUBDECKS[2]}", MODEL_TYPEIN, notes03),
     ]
-    return batches, warnings
+    return batches, warnings, dose
 
 
 # --------------------------------------------------------------------------
@@ -414,10 +461,18 @@ def write_topic(
     topic: str,
     words: list[dict],
     form_in_example: Callable[[str, str], bool] | None = None,
+    novel_words: Callable[[str, set[str]], tuple[list[str], list[str]]] | None = None,
     dry_run: bool = False,
-) -> str:
-    """Полный проход: проверить, разложить, создать колоды, записать."""
-    batches, warnings = build_topic(course, topic, words, form_in_example)
+) -> tuple[str, Dose]:
+    """Полный проход: проверить, разложить, создать колоды, записать.
+
+    Отчёт о дозе отдаём вторым значением, а не только строкой: вызывающий
+    пишет его в лог, иначе понять постфактум, соблюдалась доза или нет,
+    можно было бы только перечитывая ответы модели глазами.
+    """
+    batches, warnings, dose = build_topic(
+        course, topic, words, form_in_example, novel_words
+    )
 
     head = f"{course}::{topic}"
     lines: list[str] = []
@@ -428,7 +483,7 @@ def write_topic(
             lines.append(f"  {batch.deck.split('::')[-1]:<18} {len(batch.notes)}")
         example = batches[0].notes[0]
         lines.append("  first note of 01: " + json.dumps(example, ensure_ascii=False))
-        return "\n".join(lines + _warning_lines(warnings))
+        return "\n".join(lines + _dose_lines(dose) + _warning_lines(warnings)), dose
 
     existing = deck_names()
     total = 0
@@ -441,13 +496,47 @@ def write_topic(
             # посередине, а Ctrl+Z в Anki снимает записанное целиком.
             lines.append(f"  {name:<18} ERROR: {exc}")
             lines.append("  remaining decks untouched; Ctrl+Z in Anki undoes what was written")
-            return "\n".join([f"{head} — {total} notes written, then failed"] + lines)
+            return "\n".join([f"{head} — {total} notes written, then failed"] + lines), dose
         total += created
         mark = "✓" if not rejected else "⚠"
         lines.append(f"  {name:<18} {created} {mark}")
         lines.extend(f"      {r}" for r in rejected)
 
-    return "\n".join([f"{head} — {total} notes"] + lines + _warning_lines(warnings))
+    return (
+        "\n".join(
+            [f"{head} — {total} notes"] + lines
+            + _dose_lines(dose) + _warning_lines(warnings)
+        ),
+        dose,
+    )
+
+
+def _dose_lines(dose: Dose) -> list[str]:
+    """Строка дозы — не украшение отчёта, а единственный способ увидеть,
+    что предложения колоды 03 опять собрали целиком из известного."""
+    if not dose.counted:
+        return []
+    got = ", ".join(dose.new) if dose.new else "none"
+    mark = " ⚠ short" if dose.short else ""
+    lines = [
+        "",
+        f"deck-03 new words: {len(dose.new)} of {dose.expected} expected"
+        f"{mark} — {got}",
+    ]
+    if dose.half:
+        lines.append(
+            "  half-known (met only inside examples, do not count): "
+            + ", ".join(dose.half)
+        )
+    for et in dose.crowded:
+        lines.append(f"  ⚠ two new words in one sentence: '{et}' — one at most")
+    if dose.short:
+        lines.append(
+            "  a deck-03 sentence built only from known words teaches nothing "
+            "beyond its target word; put one ordinary A2 word into every "
+            f"{NEW_EVERY}rd of them, everything else around it known"
+        )
+    return lines
 
 
 def _warning_lines(warnings: list[str]) -> list[str]:

@@ -14,6 +14,7 @@ import sys
 import sqlite3
 import threading
 import time
+from collections import Counter
 
 from mcp.server.mcpserver import MCPServer
 
@@ -23,12 +24,15 @@ from .index import ensure_fresh, open_index
 from .lemma import Lemmatizer
 from .parse import words as split_words
 from .query import (
+    KNOWN,
+    SEEN,
     UNKNOWN,
     Vocab,
     format_check,
     format_debt,
     format_pool,
     format_text_check,
+    sentence_ok,
     topic_state as _topic_state,
 )
 from .passthrough import catalog, describe, invoke, names
@@ -51,15 +55,36 @@ def _short(value: object, limit: int = 90) -> str:
     return text if len(text) <= limit else text[: limit - 1] + "…"
 
 
+# Потолок дампа аргументов в DEBUG. topic_write на 33 слова — это 17k
+# символов, и лог за сессию распухал бы сильнее, чем его потом читают.
+# 12k покрывают тему слов на двадцать целиком, а режется только предел.
+ARGS_DUMP_MAX = 12000
+
+
+def _dump(kwargs: dict) -> str:
+    text = json.dumps(kwargs, ensure_ascii=False, indent=1)
+    if len(text) <= ARGS_DUMP_MAX:
+        return text
+    return (
+        text[:ARGS_DUMP_MAX]
+        + f"\n… обрезано, всего {len(text)} симв. (ARGS_DUMP_MAX={ARGS_DUMP_MAX})"
+    )
+
+
 def traced(fn):
     """Пишет вызовы в stderr — Claude Desktop складывает его в
     ~/Library/Logs/Claude/mcp-server-anki-vocab.log. ANKI_VOCAB_LOG=DEBUG
-    добавляет полные ответы инструментов."""
+    добавляет полные аргументы и ответы инструментов."""
 
     @functools.wraps(fn)
     def wrapper(**kwargs):
         args = ", ".join(f"{k}={_short(v)}" for k, v in kwargs.items() if v is not None)
         log.info("→ %s(%s)", fn.__name__, args)
+        # Полные аргументы отдельной строкой. В INFO они обрезаны до 90
+        # символов, и по логу нельзя было понять, какие предложения
+        # проверялись: вердикт есть, текста к нему нет.
+        if kwargs and log.isEnabledFor(logging.DEBUG):
+            log.debug("  аргументы %s:\n%s", fn.__name__, _dump(kwargs))
         started = time.perf_counter()
         try:
             out = fn(**kwargs)
@@ -128,7 +153,13 @@ def _fresh() -> Vocab:
 def vocab_check(words: list[str]) -> str:
     with _lock:
         vocab = _fresh()
-        return format_check([vocab.lookup(w) for w in words])
+        hits = [vocab.lookup(w) for w in words]
+        # Сводка одной строкой: этим же вызовом набирают дозу новых слов
+        # для колоды 03, и число ✗ — ровно размер доступного материала.
+        counts = Counter(h.status for h in hits)
+        log.info("  vocab_check: ✓%d ~%d ✗%d из %d",
+                 counts[KNOWN], counts[SEEN], counts[UNKNOWN], len(hits))
+        return format_check(hits)
 
 
 @mcp.tool(
@@ -236,9 +267,34 @@ def text_check(
     with _lock:
         vocab = _fresh()
         goal = {t.strip().lower() for t in targets or []}
-        return format_text_check(
-            [vocab.check_sentence(s, targets=goal) for s in sentences], min_coverage
-        )
+        results = [vocab.check_sentence(s, targets=goal) for s in sentences]
+        _log_text_check(sentences, results, goal, vocab, min_coverage)
+        return format_text_check(results, min_coverage)
+
+
+def _log_text_check(sentences, results, goal, vocab: Vocab, min_coverage: int) -> None:
+    """Сводка по вызову плюс разбор каждого незнакомого слова.
+
+    Процента мало: 'soojat' в отчёте выглядит нормальным новым словом, и
+    только пара «форма → лемма» показывает, что это партитив от soe, у
+    которого карточка есть. Единственный вердикт low за весь прошлый лог
+    оказался именно таким промахом морфологии, и по логу это было не
+    видно — пришлось перезапускать разбор руками.
+    """
+    low = sum(not sentence_ok(pct, new, min_coverage) for pct, new, _c in results)
+    fresh = {w for _p, new, _c in results for w in new}
+    log.info("  text_check: %d предложений, low %d, новых слов %d",
+             len(results), low, len(fresh))
+    if not log.isEnabledFor(logging.DEBUG):
+        return
+    for i, (text, (pct, new, _c)) in enumerate(zip(sentences, results), 1):
+        if not new:
+            continue
+        novel = vocab.novel(text, goal)
+        pairs = ", ".join(f"{form}→{lemma}" for lemma, form in novel.unknown)
+        half = ", ".join(f"{form}→{lemma}" for lemma, form in novel.half)
+        log.debug("  %2d %3d%%  новые: %s%s  | %s", i, pct, pairs,
+                  f"  полузнакомые: {half}" if half else "", text)
 
 
 @mcp.tool(
@@ -301,6 +357,31 @@ def _form_in_example(vocab: Vocab):
     return check
 
 
+def _novel_words(vocab: Vocab):
+    """Новые слова предложения колоды 03 — материал счётчика дозы.
+
+    Слова темы приходят из write.py словарными формами: там про
+    морфологию ничего не знают, поэтому в леммы их разворачиваем здесь.
+    """
+    goals: dict[frozenset, set[str]] = {}
+
+    def find(sentence: str, taught: set[str]) -> tuple[list[str], list[str]]:
+        key = frozenset(taught)
+        goal = goals.get(key)
+        if goal is None:
+            goal = set(taught)
+            for word in taught:
+                goal |= vocab.lem.lemmas(word)
+            goals[key] = goal
+        novel = vocab.novel(sentence, goal)
+        return (
+            [lemma for lemma, _form in novel.unknown],
+            [lemma for lemma, _form in novel.half],
+        )
+
+    return find
+
+
 @mcp.tool(
     description=(
         "Writes a topic into Anki: one word → 5 notes across three subdecks "
@@ -317,7 +398,11 @@ def _form_in_example(vocab: Vocab):
         "'russian'] for deck 03).\n"
         "Up to 33 words per call. Validation runs before the write: on bad "
         "data no note is created at all and every complaint comes back at "
-        "once. dry_run=true shows what would be written, touching nothing."
+        "once. dry_run=true shows what would be written, touching nothing.\n"
+        "The report also counts the deliberate new words in the deck-03 "
+        "sentences against the expected dose — nothing else can, since "
+        "text_check gets a flat list and cannot tell which sentences are "
+        "deck 03. It never blocks the write; dry_run shows it beforehand."
     )
 )
 @traced
@@ -330,9 +415,10 @@ def topic_write(
     with _lock:
         vocab = _fresh()
         try:
-            report = write_topic(
+            report, dose = write_topic(
                 course, topic, words,
                 form_in_example=_form_in_example(vocab),
+                novel_words=_novel_words(vocab),
                 dry_run=dry_run,
             )
         except NoteDataError as exc:
@@ -341,6 +427,19 @@ def topic_write(
             )
         except AnkiError as exc:
             return f"nothing written: {exc}"
+        # Единственная запись о дозе, которая переживёт чат. Без неё
+        # проверить, соблюдалась она или нет, можно было только
+        # перечитывая ответы модели глазами.
+        log.info(
+            "  доза колоды 03: %d из %d ожидаемых%s — %s%s%s",
+            len(dose.new), dose.expected,
+            " ⚠ мало" if dose.short else "",
+            ", ".join(dose.new) or "нет",
+            f" · полузнакомых {len(dose.half)}: {', '.join(dose.half)}"
+            if dose.half else "",
+            f" · ⚠ два новых слова разом в {len(dose.crowded)} предл."
+            if dose.crowded else "",
+        )
         if not dry_run:
             ensure_fresh(_con)  # новые слова сразу видны vocab_check
     return report

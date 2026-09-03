@@ -172,6 +172,29 @@ def test_coverage_reports_new_words(vocab):
     assert new and pct < 100
 
 
+def test_novel_keeps_half_known_words_apart(vocab):
+    """kalastama есть только внутри чужой фразы. Для покрытия это
+    известное слово, для дозы — материал помягче, но материал."""
+    novel = vocab.novel("See jõgi on ilus")
+    assert "jõgi" not in dict(novel.unknown) and "jõgi" not in dict(novel.half)
+
+    novel = vocab.novel("Ta käib kalastamas")
+    assert "kalastama" in dict(novel.half)
+    assert "kalastama" not in dict(novel.unknown)
+
+
+def test_novel_ignores_the_words_being_taught(vocab):
+    assert "lennuk" in dict(vocab.novel("Ma nägin lennukit").unknown)
+    taught = vocab.novel("Ma nägin lennukit", taught={"lennuk"})
+    assert "lennuk" not in dict(taught.unknown)
+
+
+def test_novel_keeps_the_form_next_to_the_lemma(vocab):
+    """Пара нужна, чтобы промах морфологии было видно в логе: без формы
+    рядом чужая лемма выглядит честным новым словом."""
+    assert dict(vocab.novel("Ma nägin lennukit").unknown)["lennuk"] == "lennukit"
+
+
 def test_one_new_word_is_always_allowed(vocab):
     """Жёсткий потолок ломал естественность фраз — одно новое слово ок
     независимо от покрытия."""
@@ -376,3 +399,27 @@ def test_dismissal_takes_any_form_of_the_word(vocab):
     add_lemma(vocab.con, "pere", n_word=0, n_notes=90, pos=None)
     vocab.debt_skip(["Pered"])
     assert "pere" not in [d.word for d in vocab.debt().items]
+
+
+def test_half_known_ignores_words_met_often(vocab):
+    """Порог отсекает базовую лексику: ветка A1 в индекс не входит, и без
+    него ema с её 47 попаданиями считалась бы полузнакомой."""
+    from anki_vocab.config import HALF_KNOWN_MAX
+
+    vocab.con.execute("update lemma set n_notes = ? where lemma = 'kalastama'",
+                      (HALF_KNOWN_MAX + 1,))
+    assert vocab.novel("Ta käib kalastamas").half == []
+
+    vocab.con.execute("update lemma set n_notes = ? where lemma = 'kalastama'",
+                      (HALF_KNOWN_MAX,))
+    assert "kalastama" in dict(vocab.novel("Ta käib kalastamas").half)
+
+
+def test_log_and_report_share_one_verdict(vocab):
+    """Формулу вердикта считают отчёт и лог. Пока она одна — они не
+    разъедутся; тест держит это свойство."""
+    from anki_vocab.query import sentence_ok
+
+    for pct, new in ((100, []), (20, ["a"]), (40, ["a", "b"]), (85, ["a", "b"])):
+        in_report = "low" not in format_text_check([(pct, new, ["x"])])
+        assert in_report is sentence_ok(pct, new)

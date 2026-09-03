@@ -13,7 +13,7 @@ import sqlite3
 import time
 from dataclasses import dataclass, field
 
-from .config import FUNCTION_WORDS
+from .config import FUNCTION_WORDS, HALF_KNOWN_MAX
 from .lemma import Lemmatizer
 from .parse import words
 
@@ -69,6 +69,14 @@ class Palette:
 
 
 @dataclass
+class Novel:
+    """Новые слова одного предложения, парами (лемма, форма в тексте)."""
+
+    unknown: list[tuple[str, str]] = field(default_factory=list)
+    half: list[tuple[str, str]] = field(default_factory=list)
+
+
+@dataclass
 class Debt:
     """Слово, которое человек читает в своих же примерах, но карточки
     ему так и не завёл."""
@@ -103,6 +111,7 @@ class Hit:
     topics: tuple[str, ...] = ()
     forms: tuple[str, ...] = ()
     decks: tuple[str, ...] = ()
+    times: int = 0
 
 
 class Vocab:
@@ -113,20 +122,20 @@ class Vocab:
     # --- поиск -----------------------------------------------------------
     def _row(self, lemma: str) -> Hit | None:
         row = self.con.execute(
-            "select lemma, ru, level, pos, topics, forms, n_word_notes"
+            "select lemma, ru, level, pos, topics, forms, n_word_notes, n_notes"
             " from lemma where lemma = ?",
             (lemma,),
         ).fetchone()
         if not row:
             return None
-        lem, ru, level, pos, topics, forms, n_word = row
+        lem, ru, level, pos, topics, forms, n_word, n_notes = row
         decks = self._where(lem)
         return Hit(
             query=lemma,
             status=KNOWN if n_word else SEEN,
             lemma=lem, ru=ru, level=level, pos=pos,
             topics=tuple(json.loads(topics)), forms=tuple(json.loads(forms)),
-            decks=tuple(dict.fromkeys(decks)),
+            decks=tuple(dict.fromkeys(decks)), times=n_notes,
         )
 
     def _where(self, lemma: str) -> list[str]:
@@ -353,34 +362,72 @@ class Vocab:
         codes = {code for _, code in analyses if code}
         return bool(codes) and codes <= {"K", "J"}
 
-    def check_sentence(
-        self, text: str, targets: set[str] | None = None
-    ) -> tuple[int, list[str], list[str]]:
-        """(процент покрытия, незнакомые леммы, знаменательные слова).
+    def _scan(
+        self, text: str, targets: set[str]
+    ) -> list[tuple[str, str, str, int]]:
+        """Знаменательные слова предложения: (форма, статус, лемма, попаданий).
+
+        Форму держим рядом с леммой не для красоты: промахи морфологии
+        видно только в паре. 'soojat' — партитив от soe, но Vabamorf
+        отдаёт его самостоятельной леммой, и в отчёте это выглядит
+        честным новым словом. С формой рядом сразу ясно, что случилось.
 
         targets — целевые слова карточек: они новые по определению
         и бюджет не тратят.
         """
-        targets = targets or set()
-        content: list[str] = []
-        unknown: list[str] = []
+        out: list[tuple[str, str, str, int]] = []
         for word in words(text):
             low = word.lower()
             if self._is_function(low):
                 continue
             if targets and ({low} | self.lem.lemmas(low)) & targets:
                 continue
-            content.append(low)
-            if self.lookup(low).status == UNKNOWN:
-                base = self.lem.lemma(low)
-                if base not in unknown:
-                    unknown.append(base)
-        if not content:
+            hit = self.lookup(low)
+            out.append((low, hit.status, hit.lemma or self.lem.lemma(low), hit.times))
+        return out
+
+    def check_sentence(
+        self, text: str, targets: set[str] | None = None
+    ) -> tuple[int, list[str], list[str]]:
+        """(процент покрытия, незнакомые леммы, знаменательные слова)."""
+        scan = self._scan(text, targets or set())
+        if not scan:
             return 100, [], []
-        covered = len(content) - len(
-            [w for w in content if self.lookup(w).status == UNKNOWN]
+        unknown = list(dict.fromkeys(
+            lemma for _f, status, lemma, _n in scan if status == UNKNOWN
+        ))
+        covered = sum(status != UNKNOWN for _f, status, _l, _n in scan)
+        return (
+            round(100 * covered / len(scan)),
+            unknown,
+            [form for form, _s, _l, _n in scan],
         )
-        return round(100 * covered / len(content)), unknown, content
+
+    def novel(self, text: str, taught: set[str] | None = None) -> Novel:
+        """Новое в предложении — материал дозы колоды 03.
+
+        Отличается от check_sentence тем, что редкие '~'-слова не
+        проходят молча. Там слово, мелькнувшее в чужом примере, честно
+        считается известным — иначе проверка ругалась бы на словах с
+        его же карточек. Для дозы это другой вопрос: одна встреча в
+        чужом примере запоминанию не равна, и такое слово тоже растит
+        словарь, просто мягче полностью незнакомого.
+
+        Порог HALF_KNOWN_MAX обязателен: ветка A1 в индекс не входит,
+        поэтому без него в «полузнакомые» уезжали ema, koer и täna —
+        самые знакомые слова, какие вообще есть.
+        """
+        unknown: dict[str, str] = {}
+        half: dict[str, str] = {}
+        for form, status, lemma, times in self._scan(text, taught or set()):
+            if status == UNKNOWN:
+                unknown.setdefault(lemma, form)
+            elif status == SEEN and times <= HALF_KNOWN_MAX:
+                half.setdefault(lemma, form)
+        return Novel(
+            unknown=[(lemma, form) for lemma, form in unknown.items()],
+            half=[(lemma, form) for lemma, form in half.items()],
+        )
 
 
     # --- долг: слова без своей карточки -----------------------------------
@@ -613,12 +660,21 @@ def format_pool(p: Palette) -> str:
     return "\n".join(lines)
 
 
+def sentence_ok(pct: int, new: list[str], min_coverage: int = 70) -> bool:
+    """Мягкое правило: одно новое слово допустимо всегда, дальше смотрим
+    на покрытие. Жёсткий потолок «ровно одно новое» ломал предложения —
+    естественную фразу не всегда можно собрать из готового.
+
+    Отдельной функцией, потому что вердикт считают двое: отчёт наружу и
+    строка в логе. Продублированная формула разъехалась бы при первой
+    же правке, и лог начал бы врать про собственный ответ.
+    """
+    return pct >= min_coverage or len(new) <= 1
+
+
 def format_text_check(
     results: list[tuple[int, list[str], list[str]]], min_coverage: int = 70
 ) -> str:
-    """Мягкое правило: одно новое слово допустимо всегда, дальше смотрим
-    на покрытие. Жёсткий потолок «ровно одно новое» ломал предложения —
-    естественную фразу не всегда можно собрать из готового."""
     lines = []
     candidates: list[str] = []
     low = 0
@@ -626,7 +682,7 @@ def format_text_check(
         for w in new:
             if w not in candidates:
                 candidates.append(w)
-        ok = pct >= min_coverage or len(new) <= 1
+        ok = sentence_ok(pct, new, min_coverage)
         low += not ok
         shown = ", ".join(new) if new else "—"
         lines.append(f"{i:<3}{pct:>4}%  {shown:<34} {'ok' if ok else 'low'}")

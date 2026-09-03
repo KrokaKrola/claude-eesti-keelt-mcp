@@ -40,7 +40,8 @@ KOGU = {
 
 
 def build(words, topic=TOPIC, **kw):
-    return build_topic(COURSE, topic, words, **kw)
+    batches, warnings, _dose = build_topic(COURSE, topic, words, **kw)
+    return batches, warnings
 
 
 def test_topic_words_strips_number_and_sorts():
@@ -167,6 +168,95 @@ def test_form_not_in_example_warns_but_does_not_block():
 
 
 def test_dry_run_touches_no_network():
-    out = write_topic(COURSE, TOPIC, [JOGI], dry_run=True)
+    out, _dose = write_topic(COURSE, TOPIC, [JOGI], dry_run=True)
     assert "dry run, nothing written" in out
     assert "01. sõnad" in out
+
+
+# --- доза новых слов колоды 03 ---------------------------------------------
+
+
+def fake_novel(new_by_sentence: dict[str, tuple[list[str], list[str]]]):
+    """Подставной разбор: тесты дозы про арифметику и отчёт, а не про
+    морфологию — Vabamorf сюда тянуть незачем."""
+
+    def find(sentence, taught):
+        return new_by_sentence.get(sentence, ([], []))
+
+    return find
+
+
+def dose_of(words, novel, topic=TOPIC):
+    _batches, _warnings, dose = build_topic(
+        COURSE, topic, words, novel_words=fake_novel(novel)
+    )
+    return dose
+
+
+def test_dose_not_counted_without_the_callback():
+    _batches, _warnings, dose = build_topic(COURSE, TOPIC, [JOGI])
+    assert dose.counted is False
+    assert "deck-03" not in write_topic(
+        COURSE, TOPIC, [JOGI], dry_run=True
+    )[0]
+
+
+def test_expected_dose_scales_with_topic_size_and_stops_at_the_cap():
+    from anki_vocab.write import expected_dose
+
+    assert expected_dose(0) == 0
+    assert expected_dose(1) == 1      # маленькая тема всё равно получает одно
+    assert expected_dose(3) == 1
+    assert expected_dose(9) == 3
+    assert expected_dose(30) == 5     # потолок NEW_MAX
+
+
+def test_dose_collects_new_words_and_marks_a_shortfall():
+    words = [JOGI, KOGU]
+    dose = dose_of(words, {JOGI["sentence"][0]: ([], [])})
+    assert dose.counted and dose.new == [] and dose.short
+    assert dose.expected == 1
+
+
+def test_dose_counts_new_words_and_keeps_half_known_apart():
+    dose = dose_of(
+        [JOGI],
+        {JOGI["sentence"][0]: (["ümbrik"], ["sall"])},
+    )
+    assert dose.new == ["ümbrik"] and dose.half == ["sall"]
+    assert not dose.short
+
+
+def test_two_new_words_in_one_sentence_are_flagged():
+    et = JOGI["sentence"][0]
+    dose = dose_of([JOGI], {et: (["ümbrik", "tšekk"], [])})
+    assert dose.crowded == [et]
+
+
+def test_dose_line_reaches_the_report():
+    out, dose = write_topic(
+        COURSE, TOPIC, [JOGI, KOGU],
+        novel_words=fake_novel({JOGI["sentence"][0]: (["ümbrik"], ["sall"])}),
+        dry_run=True,
+    )
+    assert "deck-03 new words: 1 of 1 expected — ümbrik" in out
+    assert "half-known" in out and "sall" in out
+    assert "⚠ short" not in out
+    assert dose.new == ["ümbrik"]
+
+
+def test_short_dose_line_explains_itself():
+    out, _dose = write_topic(
+        COURSE, TOPIC, [JOGI], novel_words=fake_novel({}), dry_run=True
+    )
+    assert "deck-03 new words: 0 of 1 expected ⚠ short — none" in out
+    assert "teaches nothing beyond its target word" in out
+
+
+def test_dose_does_not_count_the_same_word_twice():
+    dose = dose_of(
+        [JOGI, KOGU],
+        {JOGI["sentence"][0]: (["ümbrik"], []),
+         KOGU["sentence"][0]: (["ümbrik"], [])},
+    )
+    assert dose.new == ["ümbrik"]
