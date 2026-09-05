@@ -423,3 +423,114 @@ def test_log_and_report_share_one_verdict(vocab):
     for pct, new in ((100, []), (20, ["a"]), (40, ["a", "b"]), (85, ["a", "b"])):
         in_report = "low" not in format_text_check([(pct, new, ["x"])])
         assert in_report is sentence_ok(pct, new)
+
+
+# --- однообразие ----------------------------------------------------------
+
+
+def add_sentences(con, deck, texts, first_id=900):
+    """Заметка-предложение темы: слова уезжают в form как slot 'example'."""
+    for i, words_ in enumerate(texts):
+        note_id = first_id + i
+        con.execute(
+            "insert into entry (note_id,notetype,deck,level,pos,topics,ru,headword,"
+            "et_raw,examples,is_phrase,mod) values"
+            " (?,'Estonian 3 Forms',?,'a2',NULL,'[]','перевод','','','[]',0,0)",
+            (note_id, deck),
+        )
+        con.executemany(
+            "insert into form(form,lemma,note_id,slot) values (?,?,?,'example')",
+            [(w, w, note_id) for w in words_],
+        )
+
+
+def test_repeat_flags_a_word_the_batch_leans_on(vocab):
+    batch = [["panema", "õun"], ["panema", "kingitus"], ["panema", "puuvili"],
+             ["ostma", "sokk"], ["lugema", "raamat"], ["jooksma", "park"]]
+    hits = {r.lemma: r for r in vocab.repeats(batch)}
+    assert hits["panema"].in_batch == 3
+    assert "ostma" not in hits, "одиночное слово повтором не считается"
+
+
+def test_repeat_ignores_structural_verbs(vocab):
+    """olema, minema и прочий каркас ротировать бессмысленно — без них
+    фразу не построить."""
+    batch = [["minema", "pood"]] * 4
+    assert [r.lemma for r in vocab.repeats(batch)] == ["pood"]
+
+
+def test_repeat_ignores_the_words_being_taught(vocab):
+    """Пример к слову обязан его содержать — иначе каждое слово темы
+    выглядело бы повтором."""
+    batch = [["kaal", "õun"], ["kaal", "leib"], ["kaal", "liha"]]
+    assert vocab.repeats(batch, targets={"kaal"}) == []
+
+
+def test_repeat_threshold_follows_the_batch_size(vocab):
+    """Порог — корень из размера пачки: два повтора на три предложения
+    это однообразие, два на двадцать — совпадение."""
+    small = [["panema", "õun"], ["panema", "leib"], ["lugema", "raamat"]]
+    assert [r.lemma for r in vocab.repeats(small)] == ["panema"]
+
+    big = small[:2] + [[f"sõna{i}"] for i in range(18)]
+    assert vocab.repeats(big) == []
+
+    # 5 из 20 корень уже перебирают, а постоянный потолок в 4 на пачке в
+    # 80 предложений выдавал по два десятка слов разом.
+    louder = [["panema", f"sõna{i}"] for i in range(5)] + [[f"muu{i}"] for i in range(15)]
+    assert [r.lemma for r in vocab.repeats(louder)] == ["panema"]
+
+    huge = [["panema", f"sõna{i}"] for i in range(5)] + [[f"muu{i}"] for i in range(75)]
+    assert vocab.repeats(huge) == [], "5 повторов на 80 предложений — не однообразие"
+
+
+def test_repeat_counts_the_sentences_already_in_the_topic(vocab):
+    """Капельный случай: по одному разу за вызов, десять раз за тему."""
+    add_sentences(vocab.con, "колода::12. Poes::03. lause typein",
+                  [["panema", f"asi{i}"] for i in range(10)])
+    batch = [["panema", "kviitung"], ["lugema", "raamat"], ["jooksma", "park"]]
+    assert vocab.repeats(batch) == [], "без темы одиночного повтора не видно"
+    hits = {r.lemma: r for r in vocab.repeats(batch, topic="12. Poes")}
+    assert hits["panema"].in_batch == 1 and hits["panema"].in_topic == 10
+
+
+def test_repeat_spares_the_words_the_topic_teaches(vocab):
+    """'pood' в теме «12. Poes» обязан попадаться часто: жалоба на него
+    научила бы только не читать эту строку."""
+    deck = "колода::12. Poes::03. lause typein"
+    add_sentences(vocab.con, deck, [["pood", f"asi{i}"] for i in range(10)])
+    vocab.con.execute(
+        "insert into entry (note_id,notetype,deck,level,pos,topics,ru,headword,"
+        "et_raw,examples,is_phrase,mod) values"
+        " (800,'Estonian 3 Forms','колода::12. Poes::01. sõnad','a2',NULL,'[]',"
+        "'магазин','Pood','','[]',0,0)")
+    vocab.con.execute(
+        "insert into form(form,lemma,note_id,slot) values ('pood','pood',800,'Form1')")
+    batch = [["pood", "kviitung"], ["lugema", "raamat"], ["jooksma", "park"]]
+    assert vocab.repeats(batch, topic="12. Poes") == []
+
+
+def test_repeat_line_appears_in_the_report(vocab):
+    from anki_vocab.query import Repeat
+
+    out = format_text_check([(100, [], ["panema"])], 70,
+                            [Repeat("panema", 3, 20, crowded=True)], with_topic=True)
+    assert "leaning too hard on: panema ×3 (+20 already in the topic)" in out
+
+
+def test_batch_and_topic_signals_get_separate_lines(vocab):
+    """«Перепиши» и «учти на будущее» в одной строке читаются как один шум."""
+    from anki_vocab.query import Repeat
+
+    out = format_text_check(
+        [(100, [], ["panema"])], 70,
+        [Repeat("panema", 3, 20, crowded=True), Repeat("uus", 1, 76)],
+        with_topic=True,
+    )
+    assert "leaning too hard on: panema ×3" in out
+    assert "already heavy in this topic: uus (76)" in out
+    assert "uus" not in out.split("already heavy")[0]
+
+
+def test_report_stays_quiet_without_repeats(vocab):
+    assert "leaning" not in format_text_check([(100, [], ["panema"])])

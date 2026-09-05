@@ -73,7 +73,7 @@ anki-vocab:vocab_pool(level="a2", topics=<topic words>)
 
 It returns the first field of the learner's `01. sõnad` cards — dictionary forms: nominative for nouns, ma-infinitive for verbs, the word itself for invariant ones.
 
-**Take the words, not the forms.** Inflect each one as the sentence requires — `sall` in the palette becomes `Ta pani kaela sinise salli`, `soe` becomes `sooja mütsi`. Coverage is measured by lemma, so every form counts. Copying palette entries unchanged into sentences produces stilted Estonian and is not what grounding means.
+**Take the words, not the forms.** Inflect each one as the sentence requires — `sall` in the palette becomes `Tema sall on villane ja pikk`, `soe` becomes `sooja mütsi`. Coverage is measured by lemma, so every form counts. Copying palette entries unchanged into sentences produces stilted Estonian and is not what grounding means.
 
 ### When the vocabulary outgrows the palette
 
@@ -136,7 +136,8 @@ back in front of them.
 **After drafting**, validate every sentence you wrote — Ex1/Ex2/Ex3 of deck 01 and the deck-03 sentence — with one batched call:
 
 ```
-anki-vocab:text_check(sentences=[...], targets=[<the words being taught>])
+anki-vocab:text_check(sentences=[...], targets=[<the words being taught>],
+                      topic="12. Poes")
 ```
 
 A deck-03 sentence carrying one deliberate new word comes back `ok` — one new
@@ -144,7 +145,49 @@ word is always within the allowance — and that word shows up in the `new words
 line. That line is how you verify the dose (see **Introducing new words on
 purpose** below) was actually kept: count it before writing.
 
-Always pass `targets`: those words are new by definition and must not count against coverage. Rewrite whatever comes back `low`, leaning on the palette, then check again. **Two rounds maximum** — then report what is left rather than grinding further.
+Always pass `targets`: those words are new by definition and must not count against coverage. Always pass `topic` too — without it the check sees only the sentences in front of it and cannot tell you that this is the eleventh time this topic reaches for the same verb. Rewrite whatever comes back `low`, leaning on the palette, then check again. **Two rounds maximum** — then report what is left rather than grinding further.
+
+### The two monotony lines
+
+Coverage cannot see monotony: ten sentences built on the same verb score a
+perfect 100%, and that is exactly how `12. Poes` ended up with `panema` in ten
+of its sentences and `uus` in seventy-six. So `text_check` also counts, by
+lemma, how often your sentences reuse the same word — `panin`, `pani` and
+`panime` are one word — and answers on two separate lines:
+
+```
+leaning too hard on: panema ×3 (+20 already in the topic)
+already heavy in this topic: uus (76) · suur (35) · müüja (28)
+```
+
+**`leaning too hard on` is about the batch in front of you, and it is a
+rewrite.** Treat it like `low`: those sentences read as variations on one word,
+so recast some of them around another before writing. It is not cosmetic — a
+topic where every third card is another `Ma panin X-i Y-sse` teaches one
+construction eleven times instead of eleven things.
+
+**`already heavy in this topic` is a preference.** These are the words the
+topic has been leaning on all along, counted across everything written there.
+It will show up on almost every call into a mature topic, and that is fine —
+it is not asking you to contort a sentence, only to take the other word where
+the swap is free. That is what the palette's `forgotten in reviews` (first) and
+`not used lately` (second) lines are for.
+
+Two things are deliberately absent from both lines, so anything listed really
+does have an alternative:
+
+- **structural verbs** (`olema`, `minema`, `tegema`, `saama`, `tahtma`,
+  `meeldima`, `pidama`, `võima`, `käima`, `hakkama`) — every sentence needs
+  them and rotating them produces contorted Estonian;
+- **the topic's own words** — `pood` in `12. Poes` is supposed to be frequent.
+  They are exempt from the topic count, not from the batch count: the topic
+  teaches a word, it does not license building the whole set on it.
+
+`topic_write` prints the same two lines, counted over everything the call is
+about to write — deck-01 examples included. Neither blocks the write, and
+`dry_run` shows both beforehand. If `leaning too hard on` appears there after
+you thought the drafts were clean, the honest move is to fix and rewrite, not
+to report and move on.
 
 ### If `anki-vocab` is unavailable
 
@@ -335,7 +378,7 @@ Simplicity and grounding pull the same way: short everyday clauses built from kn
 
 6. **Per word**: identify lemma + POS, derive the 3 forms from the table above, and write the example sentences/translations per the grammar and A2-simplicity rules, **composing from the palette** — placing one dose word in every `NEW_EVERY`-th deck-03 sentence, and nothing new anywhere else on purpose.
 
-7. **Validate.** One batched `anki-vocab:text_check(sentences=[all sentences you wrote], targets=[the words being taught])`. Rewrite anything marked `low` and check again — but keep the deliberate dose words, they are the point. Two rounds maximum.
+7. **Validate.** One batched `anki-vocab:text_check(sentences=[all sentences you wrote], targets=[the words being taught], topic=<the topic>)`. Rewrite anything marked `low` and check again — but keep the deliberate dose words, they are the point. Two rounds maximum. Rewrite whatever shows up on `leaning too hard on` as well: that one is not about a single sentence but about the set reading as variations on one word. `already heavy in this topic` is a preference — follow it where the swap is free.
 
 8. **Write the topic** with one `anki-vocab:topic_write` call:
 
@@ -357,6 +400,7 @@ Simplicity and grounding pull the same way: short everyday clauses built from kn
 9. **Report back in Russian**, concisely. The `anki-vocab` tools answer in English to save tokens — that is between you and them; what reaches the user is Russian, including the words you quote from `new words` and `low` lines.
    - how many notes went into each deck;
    - average coverage from `text_check`, and any sentence still marked `low` with the reason;
+   - anything still on `leaning too hard on` after the rewrites, and why it stayed (`already heavy in this topic` is a preference and does not belong in the report);
    - **новые слова в предложениях** — the words you put into the deck-03 sentences on purpose: word, translation, and the sentence each went into. Close the list by offering to make cards for any of them in decks 01/02 — that is the learner's call, not yours;
    - **кандидаты в следующую тему** — the rest of the `new words` line from the last `text_check`, i.e. whatever turned up beyond the deliberate dose. If it listed nothing, write «нет». Don't extend the list from your own sense of what's new, and don't drop anything from it;
    - **дубли — отдельным списком, готовым к действию.** For every word set aside in step 2, give the word, its Russian meaning, the topic(s) it already lives in, and its existing forms:
@@ -407,12 +451,20 @@ anki-vocab:text_check(
   sentences=["Ma lähen jõele aerutama.",
              "Vabal ajal on tore aerutada.",
              "Ma aerutan igal hommikul jõel."],
-  targets=["aerutama"])
+  targets=["aerutama"],
+  topic="09. Vaba aeg")
 
 1   100%  —    ok
 2   100%  —    ok
 3   100%  —    ok
 average coverage 100%
+leaning too hard on: jõgi ×2 (+9 already in the topic)
 ```
+
+Coverage is perfect and the batch still needs work: two of the three examples
+put the same river under the boat. `Vabal ajal on tore aerutada` stays,
+`Ma aerutan igal hommikul jõel` becomes `Ma aerutan igal hommikul järvel` —
+and `järv` came off the palette's `not used lately` line, so the swap costs
+nothing and buys the learner a word they had not seen in a fortnight.
 
 The same word written without the palette scores 40% and drags in `kärestikuline`, `nautima`, `vaikus` — three unfamiliar words around the one being taught. That sentence is unlearnable, which is the whole reason this step exists.

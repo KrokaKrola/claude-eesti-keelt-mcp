@@ -31,6 +31,7 @@ from .query import (
     format_check,
     format_debt,
     format_pool,
+    format_repeats,
     format_text_check,
     sentence_ok,
     topic_state as _topic_state,
@@ -168,7 +169,7 @@ def vocab_check(words: list[str]) -> str:
         "your examples out of these. They arrive in dictionary form, as "
         "written on the card: nominative for nouns, ma-infinitive for "
         "verbs. In a sentence, inflect as the grammar demands (salli, "
-        "kaela, sooja) — coverage is measured by lemma, so any form counts. "
+        "sooja, mütsi) — coverage is measured by lemma, so any form counts. "
         "Returns two groups: 'topic' (matched on topics) and 'rest of "
         "vocabulary' — the most frequent words of that level regardless of "
         "topic. For a new topic the first group is empty, which is normal: "
@@ -255,7 +256,13 @@ def vocab_debt_skip(words: list[str], undo: bool = False) -> str:
         "(min_coverage, 70% by default). Function words, postpositions and "
         "conjunctions are ignored. Rewrite whatever comes back 'low' leaning "
         "on vocab_pool; list the remaining new words in the final report as "
-        "candidates for the next topic."
+        "candidates for the next topic.\n"
+        "Also reports monotony — words the batch keeps reusing, counted by "
+        "lemma so 'panin' and 'pani' are one word. Coverage cannot see this: "
+        "ten sentences built on the same verb score a perfect 100%. Pass "
+        "topic ('12. Poes') and the count includes the sentences already "
+        "written there, which is the only way to catch a word you spread "
+        "thin across several calls — always pass it when filling a topic."
     )
 )
 @traced
@@ -263,16 +270,22 @@ def text_check(
     sentences: list[str],
     targets: list[str] | None = None,
     min_coverage: int = 70,
+    topic: str | None = None,
 ) -> str:
     with _lock:
         vocab = _fresh()
         goal = {t.strip().lower() for t in targets or []}
         results = [vocab.check_sentence(s, targets=goal) for s in sentences]
-        _log_text_check(sentences, results, goal, vocab, min_coverage)
-        return format_text_check(results, min_coverage)
+        repeats = vocab.repeats(
+            [content for _p, _n, content in results], topic=topic, targets=goal
+        )
+        _log_text_check(sentences, results, goal, vocab, min_coverage, repeats)
+        return format_text_check(results, min_coverage, repeats, bool(topic))
 
 
-def _log_text_check(sentences, results, goal, vocab: Vocab, min_coverage: int) -> None:
+def _log_text_check(
+    sentences, results, goal, vocab: Vocab, min_coverage: int, repeats
+) -> None:
     """Сводка по вызову плюс разбор каждого незнакомого слова.
 
     Процента мало: 'soojat' в отчёте выглядит нормальным новым словом, и
@@ -283,8 +296,13 @@ def _log_text_check(sentences, results, goal, vocab: Vocab, min_coverage: int) -
     """
     low = sum(not sentence_ok(pct, new, min_coverage) for pct, new, _c in results)
     fresh = {w for _p, new, _c in results for w in new}
-    log.info("  text_check: %d предложений, low %d, новых слов %d",
-             len(results), low, len(fresh))
+    log.info("  text_check: %d предложений, low %d, новых слов %d%s",
+             len(results), low, len(fresh),
+             "  повторы: " + ", ".join(
+                 f"{r.lemma}×{r.in_batch}"
+                 + (f"(+{r.in_topic})" if r.in_topic else "")
+                 for r in repeats
+             ) if repeats else "")
     if not log.isEnabledFor(logging.DEBUG):
         return
     for i, (text, (pct, new, _c)) in enumerate(zip(sentences, results), 1):
@@ -382,6 +400,28 @@ def _novel_words(vocab: Vocab):
     return find
 
 
+def _repeat_check(vocab: Vocab, topic: str):
+    """Однообразие того, что реально уезжает в колоду.
+
+    Тему передаём: без неё видно только текущий вызов, а panema набрался
+    в 12. Poes именно тем, что расходился по вызовам двойками и тройками.
+    """
+    def find(sentences: list[str], taught: set[str]):
+        goal = set(taught)
+        for word in taught:
+            goal |= vocab.lem.lemmas(word)
+        batch = [vocab.check_sentence(s, targets=goal)[2] for s in sentences]
+        found = vocab.repeats(batch, topic=topic, targets=goal)
+        # Держим результат при себе: отчёт уходит модели, а в лог его
+        # надо положить отдельно — иначе постфактум видно только то,
+        # что модель решила написать в ответе.
+        find.found = found
+        return found
+
+    find.found = []
+    return find
+
+
 @mcp.tool(
     description=(
         "Writes a topic into Anki: one word → 5 notes across three subdecks "
@@ -402,7 +442,9 @@ def _novel_words(vocab: Vocab):
         "The report also counts the deliberate new words in the deck-03 "
         "sentences against the expected dose — nothing else can, since "
         "text_check gets a flat list and cannot tell which sentences are "
-        "deck 03. It never blocks the write; dry_run shows it beforehand."
+        "deck 03 — and flags the words the batch leans on too hard, "
+        "counting the sentences already in the topic. Neither blocks the "
+        "write; dry_run shows both beforehand."
     )
 )
 @traced
@@ -414,11 +456,13 @@ def topic_write(
 ) -> str:
     with _lock:
         vocab = _fresh()
+        seek_repeats = _repeat_check(vocab, topic)
         try:
             report, dose = write_topic(
                 course, topic, words,
                 form_in_example=_form_in_example(vocab),
                 novel_words=_novel_words(vocab),
+                repeat_check=seek_repeats,
                 dry_run=dry_run,
             )
         except NoteDataError as exc:
@@ -440,6 +484,15 @@ def topic_write(
             f" · ⚠ два новых слова разом в {len(dose.crowded)} предл."
             if dose.crowded else "",
         )
+        if seek_repeats.found:
+            log.info(
+                "  ⚠ однообразие: %s",
+                ", ".join(
+                    f"{r.lemma}×{r.in_batch}"
+                    + (f" (+{r.in_topic} в теме)" if r.in_topic else "")
+                    for r in seek_repeats.found
+                ),
+            )
         if not dry_run:
             ensure_fresh(_con)  # новые слова сразу видны vocab_check
     return report

@@ -25,6 +25,7 @@ import urllib.request
 from typing import Any, Callable
 
 from .config import ADDON_META, NEW_EVERY, NEW_MAX, POS_TAGS
+from .query import format_repeats
 
 SUBDECKS = ("01. sõnad", "02. sõnad typein", "03. lause typein")
 MODEL_WORD = "Estonian 3 Forms"
@@ -462,6 +463,7 @@ def write_topic(
     words: list[dict],
     form_in_example: Callable[[str, str], bool] | None = None,
     novel_words: Callable[[str, set[str]], tuple[list[str], list[str]]] | None = None,
+    repeat_check: Callable[[list[str], set[str]], list] | None = None,
     dry_run: bool = False,
 ) -> tuple[str, Dose]:
     """Полный проход: проверить, разложить, создать колоды, записать.
@@ -473,6 +475,10 @@ def write_topic(
     batches, warnings, dose = build_topic(
         course, topic, words, form_in_example, novel_words
     )
+    # Считаем и здесь, а не только в text_check: тот проверяет черновик,
+    # и его могут не вызвать вовсе, — а сюда приходит ровно то, что
+    # ляжет в колоду.
+    repeats = repeat_check(*_sentences(batches)) if repeat_check else []
 
     head = f"{course}::{topic}"
     lines: list[str] = []
@@ -483,7 +489,13 @@ def write_topic(
             lines.append(f"  {batch.deck.split('::')[-1]:<18} {len(batch.notes)}")
         example = batches[0].notes[0]
         lines.append("  first note of 01: " + json.dumps(example, ensure_ascii=False))
-        return "\n".join(lines + _dose_lines(dose) + _warning_lines(warnings)), dose
+        return (
+            "\n".join(
+                lines + _dose_lines(dose) + _repeat_lines(repeats)
+                + _warning_lines(warnings)
+            ),
+            dose,
+        )
 
     existing = deck_names()
     total = 0
@@ -505,10 +517,37 @@ def write_topic(
     return (
         "\n".join(
             [f"{head} — {total} notes"] + lines
-            + _dose_lines(dose) + _warning_lines(warnings)
+            + _dose_lines(dose) + _repeat_lines(repeats) + _warning_lines(warnings)
         ),
         dose,
     )
+
+
+def _sentences(batches: list[Batch]) -> tuple[list[str], set[str]]:
+    """Все предложения пачки и слова, которым тема учит.
+
+    Целевые слова из счёта повторов надо вычесть: пример к слову обязан
+    его содержать, и без этого каждое слово темы выглядело бы повтором
+    ровно четыре раза.
+    """
+    texts: list[str] = []
+    for note in batches[0].notes:
+        # У несклоняемого слова один пример размножен на три слота —
+        # иначе каждое его слово выглядело бы троекратным повтором.
+        texts += dict.fromkeys(
+            note["fields"][f"Ex{i}"] for i in (1, 2, 3) if note["fields"].get(f"Ex{i}")
+        )
+    texts += [note["fields"]["Answer"] for note in batches[2].notes]
+    taught = {
+        note["fields"]["Form1"].strip().lower() for note in batches[0].notes
+    }
+    return texts, taught
+
+
+def _repeat_lines(repeats: list) -> list[str]:
+    if not repeats:
+        return []
+    return [""] + format_repeats(repeats, with_topic=True)
 
 
 def _dose_lines(dose: Dose) -> list[str]:

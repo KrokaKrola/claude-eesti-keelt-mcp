@@ -13,7 +13,15 @@ import sqlite3
 import time
 from dataclasses import dataclass, field
 
-from .config import FUNCTION_WORDS, HALF_KNOWN_MAX
+from .config import (
+    FUNCTION_WORDS,
+    HALF_KNOWN_MAX,
+    REPEAT_IN_TOPIC,
+    REPEAT_MIN,
+    REPEAT_SHOWN,
+    REPEAT_TOP,
+    STRUCTURAL_VERBS,
+)
 from .lemma import Lemmatizer
 from .parse import words
 
@@ -66,6 +74,19 @@ class Palette:
     dropped: int = 0
     stale: list[str] = field(default_factory=list)
     weak: list[str] = field(default_factory=list)
+
+
+@dataclass
+class Repeat:
+    """Слово, на которое примеры опираются слишком часто."""
+
+    lemma: str
+    in_batch: int          # в скольких предложениях этой пачки
+    in_topic: int = 0      # плюс в скольких уже записанных в тему
+    own: bool = False      # слово самой темы: у него здесь своя карточка
+    # Пачка построена на этом слове здесь и сейчас — это переписывают.
+    # Иначе слово просто давно заезжено в теме, и это пожелание.
+    crowded: bool = False
 
 
 @dataclass
@@ -389,7 +410,12 @@ class Vocab:
     def check_sentence(
         self, text: str, targets: set[str] | None = None
     ) -> tuple[int, list[str], list[str]]:
-        """(процент покрытия, незнакомые леммы, знаменательные слова)."""
+        """(процент покрытия, незнакомые леммы, знаменательные леммы).
+
+        Третьим значением идут именно леммы, а не формы из текста: по
+        ним считается однообразие, и 'panin'/'pani'/'panime' должны
+        сойтись в одно слово, иначе повтор не виден.
+        """
         scan = self._scan(text, targets or set())
         if not scan:
             return 100, [], []
@@ -400,8 +426,93 @@ class Vocab:
         return (
             round(100 * covered / len(scan)),
             unknown,
-            [form for form, _s, _l, _n in scan],
+            list(dict.fromkeys(lemma for _f, _s, lemma, _n in scan)),
         )
+
+    # --- однообразие ------------------------------------------------------
+    def topic_sentence_use(self, topic: str) -> dict[str, int]:
+        """Сколько уже записанных в тему предложений содержит каждую лемму.
+
+        Предложения темы — это примеры словарных карточек (slot 'example')
+        и ответы колоды 03 (is_phrase). Ответ колоды 02 — одна словоформа,
+        не предложение, и в счёт не идёт.
+        """
+        rows = self.con.execute(
+            "select f.lemma, count(distinct f.note_id) from form f"
+            " join entry e on e.note_id = f.note_id"
+            " where e.deck like ?"
+            "   and (f.slot = 'example' or (f.slot = 'Answer' and e.is_phrase = 1))"
+            " group by f.lemma",
+            (f"%{topic.strip()}%",),
+        )
+        return dict(rows)
+
+    def topic_headwords(self, topic: str) -> set[str]:
+        """Слова, которым тема сама и учит.
+
+        Их частота — свойство темы, а не однообразия: 'pood' в теме
+        «12. Poes» обязан попадаться часто, и ругаться на него значит
+        приучить модель не читать эту строку вовсе.
+        """
+        return {
+            lemma for (lemma,) in self.con.execute(
+                "select distinct f.lemma from form f"
+                " join entry e on e.note_id = f.note_id"
+                " where e.deck like ? and e.is_phrase = 0 and f.slot <> 'example'",
+                (f"%{topic.strip()}%",),
+            )
+        }
+
+    def repeats(
+        self,
+        batch: list[list[str]],
+        topic: str | None = None,
+        targets: set[str] | None = None,
+    ) -> list[Repeat]:
+        """Слова, которые пачка предложений эксплуатирует.
+
+        Два независимых повода пожаловаться. Первый — доля внутри самой
+        пачки: она ловит вызов, где три предложения из шести построены
+        на одном глаголе. Второй — вершина рейтинга темы: она ловит то,
+        что первому не видно, — по два-три повтора за вызов, которые за
+        несколько заходов и дают десять panema.
+
+        Слова темы из второго повода исключены: 'pood' в теме «12. Poes»
+        обязан попадаться часто, и жалоба на него научила бы только не
+        читать эту строку. Из первого не исключены — тема учит слову,
+        а не разрешает построить на нём всю подборку.
+        """
+        if not batch:
+            return []
+        skip = (targets or set()) | STRUCTURAL_VERBS
+        counts: dict[str, int] = {}
+        for lemmas in batch:
+            for lemma in set(lemmas) - skip:
+                counts[lemma] = counts.get(lemma, 0) + 1
+
+        prior = self.topic_sentence_use(topic) if topic else {}
+        own = self.topic_headwords(topic) if topic else set()
+        hot = self._hot(prior, skip | own | FUNCTION_WORDS)
+        floor = max(REPEAT_MIN, round(len(batch) ** 0.5))
+
+        out = []
+        for lemma, n in counts.items():
+            if n >= floor or lemma in hot:
+                out.append(Repeat(lemma, n, prior.get(lemma, 0), lemma in own, n >= floor))
+        # Обрезает format_repeats, и по каждой строке отдельно: пять
+        # «перепиши» не должны съесть место у «учти на будущее».
+        out.sort(key=lambda r: (not r.crowded, -r.in_batch, -r.in_topic, r.lemma))
+        return out
+
+    @staticmethod
+    def _hot(usage: dict[str, int], skip: set[str]) -> set[str]:
+        """Вершина рейтинга темы — слова, которых в ней уже слишком много."""
+        ranked = sorted(
+            ((n, w) for w, n in usage.items()
+             if n >= REPEAT_IN_TOPIC and w not in skip),
+            key=lambda x: (-x[0], x[1]),
+        )
+        return {w for _n, w in ranked[:REPEAT_TOP]}
 
     def novel(self, text: str, taught: set[str] | None = None) -> Novel:
         """Новое в предложении — материал дозы колоды 03.
@@ -672,8 +783,49 @@ def sentence_ok(pct: int, new: list[str], min_coverage: int = 70) -> bool:
     return pct >= min_coverage or len(new) <= 1
 
 
+def format_repeats(repeats: list[Repeat], with_topic: bool) -> list[str]:
+    """Строки однообразия. Отдельной функцией — их печатают двое:
+    text_check на черновике и topic_write на записи.
+
+    Строк две, и это не украшение. Первая — про эту пачку, её
+    переписывают. Вторая — про накопленный вес слова в теме, и она
+    сработает почти на каждом вызове зрелой темы; смешать их в одну
+    значило бы поставить рядом «перепиши» и «учти», а модель прочтёт
+    такой список как один шум и перестанет читать вовсе.
+    """
+    lines = []
+    crowded = [r for r in repeats if r.crowded][:REPEAT_SHOWN]
+    heavy = [r for r in repeats if not r.crowded][:REPEAT_SHOWN]
+    if crowded:
+        parts = []
+        for r in crowded:
+            tail = (
+                f" (+{r.in_topic} already in the topic)"
+                if with_topic and r.in_topic else ""
+            )
+            parts.append(f"{r.lemma} ×{r.in_batch}{tail}")
+        lines += [
+            "leaning too hard on: " + " · ".join(parts),
+            "— these sentences read as variations on one word: rewrite some "
+            "of them around another. Structural verbs are already excluded, "
+            "so everything listed here has an alternative.",
+        ]
+    if heavy:
+        lines += [
+            "already heavy in this topic: "
+            + " · ".join(f"{r.lemma} ({r.in_topic})" for r in heavy),
+            "— a preference, not a verdict: where a swap costs nothing, take "
+            "the word from vocab_pool's 'forgotten in reviews' or 'not used "
+            "lately' line instead.",
+        ]
+    return lines
+
+
 def format_text_check(
-    results: list[tuple[int, list[str], list[str]]], min_coverage: int = 70
+    results: list[tuple[int, list[str], list[str]]],
+    min_coverage: int = 70,
+    repeats: list[Repeat] | None = None,
+    with_topic: bool = False,
 ) -> str:
     lines = []
     candidates: list[str] = []
@@ -693,6 +845,7 @@ def format_text_check(
     if candidates:
         tail += "\nnew words (candidates for the next topic): " + ", ".join(candidates)
     lines.append(tail)
+    lines.extend(format_repeats(repeats or [], with_topic))
     return "\n".join(lines)
 
 

@@ -260,3 +260,47 @@ def test_dose_does_not_count_the_same_word_twice():
          KOGU["sentence"][0]: (["ümbrik"], [])},
     )
     assert dose.new == ["ümbrik"]
+
+
+# --- однообразие ----------------------------------------------------------
+
+
+def test_repeat_check_sees_every_sentence_of_the_topic():
+    """Считать надо и примеры колоды 01, и предложения колоды 03 —
+    однообразие живёт в обеих."""
+    seen: dict = {}
+
+    def spy(sentences, taught):
+        seen["sentences"], seen["taught"] = sentences, taught
+        return []
+
+    write_topic(COURSE, TOPIC, [JOGI], repeat_check=spy, dry_run=True)
+    assert seen["sentences"] == [et for et, _ru in JOGI["ex"]] + [JOGI["sentence"][0]]
+    assert seen["taught"] == {"jõgi"}
+
+
+def test_repeat_check_counts_an_invariant_example_once():
+    """У несклоняемого слова один пример размножен на три слота — иначе
+    каждое его слово выглядело бы троекратным повтором."""
+    seen: list = []
+    write_topic(COURSE, TOPIC, [KOGU],
+                repeat_check=lambda s, t: seen.extend(s) or [], dry_run=True)
+    assert seen == [KOGU["ex"][0][0], KOGU["sentence"][0]]
+
+
+def test_repeat_line_reaches_the_report():
+    from anki_vocab.query import Repeat
+
+    out, _dose = write_topic(
+        COURSE, TOPIC, [JOGI],
+        repeat_check=lambda s, t: [Repeat("panema", 3, 20, crowded=True)],
+        dry_run=True,
+    )
+    assert "leaning too hard on: panema ×3 (+20 already in the topic)" in out
+
+
+def test_report_stays_quiet_without_repeats():
+    out, _dose = write_topic(
+        COURSE, TOPIC, [JOGI], repeat_check=lambda s, t: [], dry_run=True
+    )
+    assert "leaning" not in out
