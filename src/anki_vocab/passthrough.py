@@ -26,6 +26,20 @@ CACHE = DATA_DIR / "anki_tools.json"
 # честно короткий.
 MAX_RESULT = 12000
 
+# Инструменты аддона, которые меняют коллекцию. Перечислять их поимённо
+# нельзя: аддон добавляет новые, и список устаревал бы молча — а молчит
+# он ровно там, где запись прошла мимо topic_write.
+WRITE_PREFIXES = (
+    "add_", "answer_", "bury", "change_", "clear_", "create_", "delete_",
+    "forget", "gui_", "import_", "move_", "remove_", "reposition", "set_",
+    "suspend", "sync", "unbury", "unsuspend", "update_",
+)
+
+
+def mutating(tool: str) -> bool:
+    return tool.startswith(WRITE_PREFIXES)
+
+
 # Схем больше нескольких сразу не отдаём: широкий шаблон вроде 'a' иначе
 # вывалит все 41 и сведёт всю затею на нет.
 MAX_SCHEMAS = 4

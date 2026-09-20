@@ -434,6 +434,7 @@ def build(con: sqlite3.Connection, full: bool = False, quiet: bool = False) -> d
         note_deck = col.note_decks(snap)
         stats = col.note_stats(snap)
 
+        built_at = int(_meta_get(con, "built_at") or 0)
         if full:
             con.execute("delete from entry")
             con.execute("delete from form")
@@ -506,8 +507,19 @@ def build(con: sqlite3.Connection, full: bool = False, quiet: bool = False) -> d
     finally:
         snap.close()
 
+    # Заметки, которых в индексе не было и которые созданы после
+    # прошлой сборки: id заметки Anki — это время её создания в мс.
+    # Заехавшие в область видимости переносом сюда не попадают, как и
+    # первое наполнение индекса: там ново вообще всё.
+    appeared = collections.Counter(
+        deck_of.get(note_id, "") or "?"
+        for note_id in scoped_ids - known_ids
+        if built_at and not full and note_id > built_at * 1000
+    )
+
     stats = {
         "moved": moved,
+        "appeared": appeared,
         "stored": stored,
         "skipped": skipped,
         "removed": len(removed),
@@ -540,18 +552,36 @@ def is_stale(con: sqlite3.Connection) -> bool:
     return saved is None or json.loads(saved) != [list(p) for p in col.fingerprint()]
 
 
-def ensure_fresh(con: sqlite3.Connection) -> bool:
-    """Ленивая досборка. Проверка stat() по трём файлам стоит доли миллисекунды."""
+def ensure_fresh(con: sqlite3.Connection, own_write: bool = False) -> bool:
+    """Ленивая досборка. Проверка stat() по трём файлам стоит доли миллисекунды.
+
+    own_write=True — досборка сразу после своей же записи: появившиеся
+    заметки ожидаемы и жалобы не заслуживают.
+    """
     if not is_stale(con):
         log.debug("коллекция не менялась — индекс актуален")
         return False
-    log.info("коллекция изменилась — досборка индекса")
     stats = build(con, full=False, quiet=True)
-    log.info(
-        "досборка: обновлено %s, сменили колоду %s, удалено %s, лемм %s, %.0f мс",
-        stats["stored"], stats["moved"], stats["removed"], stats["lemmas"],
-        stats["seconds"] * 1000,
+    appeared = stats["appeared"]
+    # Открытый Anki трогает -wal на каждом ответе, так что отпечаток
+    # расходится по десятку раз за сессию, а менять при этом нечего.
+    # Такую досборку держим в DEBUG, иначе она забивает лог.
+    changed = stats["stored"] or stats["moved"] or stats["removed"]
+    log.log(
+        logging.INFO if changed else logging.DEBUG,
+        "досборка: обновлено %s, новых %s, сменили колоду %s, удалено %s,"
+        " лемм %s, %.0f мс",
+        stats["stored"], sum(appeared.values()), stats["moved"],
+        stats["removed"], stats["lemmas"], stats["seconds"] * 1000,
     )
+    if appeared and not own_write:
+        # Единственный след записи, сделанной не этим сервером: заметки
+        # в колоде есть, а вызова, который их создал, в логе нет.
+        log.info(
+            "  ⚠ заметок появилось мимо сервера: %d · %s",
+            sum(appeared.values()),
+            ", ".join(f"{deck} ×{n}" for deck, n in appeared.most_common(5)),
+        )
     return True
 
 

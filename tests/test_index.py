@@ -1,12 +1,15 @@
+import collections
 import json
+import logging
 import sqlite3
 
 import pytest
 
-from anki_vocab import collection
+from anki_vocab import collection, index
 from anki_vocab.index import (
     SCHEMA,
     _headword_lemmas,
+    ensure_fresh,
     is_stale,
     open_index,
     reconcile_decks,
@@ -131,3 +134,40 @@ def test_headword_skips_sentences_and_translations(lem):
 def test_headword_keeps_phrasal_verbs(lem):
     """Два слова разрешены ради 'kaasa elama' — это словарная единица."""
     assert _headword_lemmas("kaasa elama\x1fболеть за", lem) == {"kaasa", "elama"}
+
+
+@pytest.fixture
+def rebuild(monkeypatch):
+    """Досборка без коллекции: интересен только вердикт, который она пишет."""
+    def fake(appeared=(), stored=0):
+        stats = {
+            "stored": stored, "moved": 0, "removed": 0, "lemmas": 0,
+            "seconds": 0.1, "appeared": collections.Counter(appeared),
+        }
+        monkeypatch.setattr(index, "is_stale", lambda con: True)
+        monkeypatch.setattr(index, "build", lambda con, full, quiet: stats)
+    return fake
+
+
+def test_writes_past_the_server_are_reported(rebuild, caplog):
+    rebuild(appeared=["курс::A2::12. Poes::03. lause typein"] * 12, stored=12)
+    with caplog.at_level(logging.INFO, logger="anki_vocab"):
+        ensure_fresh(None)
+    assert "мимо сервера" in caplog.text
+    assert "12" in caplog.text
+
+
+def test_own_write_is_not_reported_as_foreign(rebuild, caplog):
+    rebuild(appeared=["курс::A2::12. Poes::03. lause typein"] * 12, stored=12)
+    with caplog.at_level(logging.INFO, logger="anki_vocab"):
+        ensure_fresh(None, own_write=True)
+    assert "мимо сервера" not in caplog.text
+
+
+def test_rebuild_that_changed_nothing_stays_out_of_the_log(rebuild, caplog):
+    """Открытый Anki трогает -wal на каждом ответе: отпечаток расходится
+    по десятку раз за сессию, и в INFO от этого одна вода."""
+    rebuild()
+    with caplog.at_level(logging.INFO, logger="anki_vocab"):
+        ensure_fresh(None)
+    assert caplog.text == ""

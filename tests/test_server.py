@@ -16,7 +16,7 @@ TOOLS = ["vocab_check", "vocab_pool", "text_check", "word_forms", "topic_state"]
 @pytest.fixture(autouse=True)
 def isolated_index(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "INDEX", tmp_path / "vocab.sqlite")
-    monkeypatch.setattr(server, "ensure_fresh", lambda con: False)
+    monkeypatch.setattr(server, "ensure_fresh", lambda con, **_: False)
     monkeypatch.setattr(server, "_con", None)
     monkeypatch.setattr(server, "_vocab", None)
     yield

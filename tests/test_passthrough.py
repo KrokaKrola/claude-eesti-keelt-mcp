@@ -88,3 +88,15 @@ def test_addon_error_points_at_the_schema(tools, monkeypatch):
     monkeypatch.setattr(pt, "call", boom)
     out = pt.invoke(tools, "create_deck", {"deck_name": "a::b::c"})
     assert "maximum 2 levels" in out and "anki_tools('create_deck')" in out
+
+
+def test_mutating_covers_the_write_tools(tools):
+    """Проброс должен отличать запись от чтения: запись мимо topic_write
+    — единственное, что потом не сходится в логе."""
+    names = {t["name"] for t in tools}
+    for tool in ("add_notes", "update_note_fields", "delete_notes", "create_deck"):
+        assert tool in names, f"аддон больше не отдаёт {tool}"
+        assert pt.mutating(tool)
+    for tool in ("find_notes", "notes_info", "list_decks"):
+        assert tool in names
+        assert not pt.mutating(tool)
