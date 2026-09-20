@@ -134,9 +134,15 @@ def test_verb_keeps_three_forms_and_an_empty_form4():
     assert len(deck02.notes) == 3
 
 
-def test_declinable_word_without_the_fourth_form_is_rejected():
-    with pytest.raises(NoteDataError, match="needs 4"):
-        build([{**JOGI, "forms": ["Jõgi", "jõe", "jõge"]}])
+def test_declinable_word_may_skip_the_fourth_form():
+    """У вещественных (vesi, jahu, mesi) партитива мн. ч. на практике
+    нет, и выдуманная форма хуже её отсутствия: три формы принимаем,
+    Form4 уезжает пустой, колода 02 получает три заметки."""
+    (deck01, deck02, _), _ = build([{**JOGI, "forms": ["Jõgi", "jõe", "jõge"]}])
+    assert deck01.notes[0]["fields"]["Form3"] == "jõge"
+    assert deck01.notes[0]["fields"]["Form4"] == ""
+    assert len(deck02.notes) == 3
+    assert deck02.notes[2]["fields"]["Form"] == "3-я форма (партитив)"
 
 
 def test_verb_with_four_forms_is_rejected():

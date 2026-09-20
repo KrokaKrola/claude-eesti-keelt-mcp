@@ -37,7 +37,7 @@ Default course path (unless the user gives another): `kursuse eesti keel::A2`. I
  "sentence": ["Meile meeldib jõe ääres kalastada.", "Нам нравится рыбачить у реки."]}
 ```
 
-- `forms` — the canonical forms by part of speech (table below): **four for a declinable word** (nominative, genitive, partitive, **partitive plural**), three for a verb. `Form1` may be capitalized (dictionary style), the rest lowercase. An invariant word takes a single form and a single `ex` pair. Sending three forms for a noun, or four for a verb, is rejected outright — the server will not guess the missing one.
+- `forms` — the canonical forms by part of speech (table below): **four for a declinable word** (nominative, genitive, partitive, **partitive plural**), three for a verb. `Form1` may be capitalized (dictionary style), the rest lowercase. An invariant word takes a single form and a single `ex` pair. Sending four forms for a verb is rejected outright. A declinable word may send **three**, and only for one reason: its partitive plural is not used in practice (see below).
 - `ex` — still **three pairs, never four**: example N shows form N (`ex[0]` uses form 1, `ex[1]` form 2, `ex[2]` form 3). The 4th form is deliberately example-free — it is asked for as a bare form, and the deck-02 note for it carries no example. These pairs land on the deck-01 card and are reused on the matching deck-02 notes.
 - `sentence` — a brand-new sentence for deck 03, different wording from `ex`, normal capitalization.
 
@@ -51,13 +51,32 @@ Older topics in this collection carry the topic as a **single underscored tag** 
 
 | POS | Form1 (label) | Form2 (label) | Form3 (label) | Form4 (label) |
 | --- | --- | --- | --- | --- |
-| Noun | nominative — `1-я форма (номинатив)` | genitive — `2-я форма (генитив)` | partitive — `3-я форма (партитив)` | **partitive plural** — `4-я форма (партитив мн. ч.)` |
+| Noun | nominative — `1-я форма (номинатив)` | genitive — `2-я форма (генитив)` | partitive — `3-я форма (партитив)` | **partitive plural** — `4-я форма (партитив мн. ч.)`; omitted for a mass noun |
 | Adjective | same labels as noun | | | same as noun |
 | Declinable pronoun (`keegi→kellegi→kedagi`, `ükski→ühegi→ühtegi`, …) | same labels as noun | | | same as noun |
 | Verb | ma-infinitive — `1-я форма (ma-инфинитив)` | da-infinitive — `2-я форма (da-инфинитив)` | mina-vorm, 1st p. sg. present — `3-я форма (mina-vorm)` | **none** — verbs take 3 forms |
 | Invariant word — most adverbs (edasi, otsas, ringi…) and a handful of indeclinable pronouns/determiners (kogu, sama…) | same word repeated for Form1/2/3 in deck 01; **deck 02 gets a single note** with `Form` left empty | | | **none** |
 
 The 4th form is the **osastav mitmus** — `jõgi → jõgesid`, `raamat → raamatuid`, `suur → suuri`. Take the form Sõnaveeb gives; where the dictionary lists two variants, take the first one. Adjectives and declinable pronouns get it exactly like nouns. Verbs and invariant words do not: `Form4` goes into Anki empty and the card template simply hides it.
+
+### Mass nouns: leave the 4th form out
+
+Some words have no partitive plural anyone actually says — the mass nouns
+(`vesi`, `piim`, `kohv`, `tee`, `viin`, `liha`, `suhkur`, `jahu`, `sool`,
+`mesi`, `või`, `mais`). A dictionary will still print a form for them
+(`vesi → vesi`, `või → võisid`, `mais → maise`), and drilling that form on a
+card teaches the learner something they will never use, or — worse — something
+you half-guessed.
+
+So for those words **send three forms**, not four. The server accepts it:
+`Form4` goes into Anki empty, the template hides it, and deck 02 gets three
+notes for that word instead of four. `ex` stays at three pairs either way.
+
+The test is usage, not the dictionary: if you cannot picture an ordinary A2
+sentence using the partitive plural, leave it out. When the plural is perfectly
+normal (`leib → leibu`, `muna → mune`, `kala → kalu`, `küpsis → küpsiseid`),
+give all four. A made-up 4th form is worse than a missing one; say in the
+report which words you left at three.
 
 If the word the user sends is an **inflected form** (e.g. they copied "Erinevaid", "Viskab", "Valas", "Suled", "Ühtegi" straight out of a text), first work out the dictionary lemma and its POS, then derive the canonical forms from that lemma (four if it declines, three if it is a verb) — don't just repeat the inflected form across the slots. Translate the **lemma** to Russian (its base meaning), not necessarily the narrower sense of the one inflected form the user happened to encounter. If a word arrives with no translation at all, work it out yourself and flag it in the final report rather than silently guessing forever without mentioning it.
 

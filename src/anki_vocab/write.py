@@ -50,14 +50,20 @@ VERB_LABELS = (
     "3-я форма (mina-vorm)",
 )
 
-# Склоняются как существительное — и только у них есть четвёртая форма,
+# Склоняются как существительное — и только у них бывает четвёртая форма,
 # партитив множественного числа. Остальное либо спрягается (глагол) и
 # обходится тремя, либо не меняется вовсе и подписи форм не получает.
+# Четвёртая форма у склоняемого слова необязательна: у вещественных
+# (vesi, jahu, mesi, sool, või) партитив мн. ч. на практике не
+# употребляется, и выдуманная форма хуже её отсутствия — три формы
+# принимаем как есть, Form4 уезжает в Anki пустой, а колода 02 получает
+# на слово три заметки вместо четырёх.
 NOUN_LIKE = {"существительное", "прилагательное", "местоимение", "числительное"}
 
 FORMS_RULE = (
     "4 non-empty forms for a declinable word (номинатив, генитив, партитив, "
-    "партитив мн. ч.), 3 for a verb, 1 for an invariant word"
+    "партитив мн. ч.) — 3 if the partitive plural is not used in practice "
+    "(вещественное: vesi, jahu, mesi), 3 for a verb, 1 for an invariant word"
 )
 
 
@@ -202,12 +208,6 @@ def _validate(word: dict, seen: set[str], where: str, problems: list[str]) -> di
         declinable = pos in NOUN_LIKE and not invariant
         if len(forms) == 1:
             forms = forms * 3
-        elif len(forms) == 3 and declinable:
-            problems.append(
-                f"{where} ({et}): forms — got 3, a declinable word needs 4: "
-                "номинатив, генитив, партитив, партитив мн. ч."
-            )
-            forms = []
         elif len(forms) == 4 and not declinable:
             problems.append(
                 f"{where} ({et}): forms — got 4, but the 4th form (партитив "
