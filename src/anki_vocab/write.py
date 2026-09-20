@@ -31,15 +31,18 @@ SUBDECKS = ("01. sõnad", "02. sõnad typein", "03. lause typein")
 MODEL_WORD = "Estonian 3 Forms"
 MODEL_TYPEIN = "Estonian Word Forms with TypeIn"
 
-# Аддон режет пачку на 100 заметок; на слово приходится три заметки
-# колоды 02, она и упирается в потолок первой.
+# Аддон режет пачку на 100 заметок; на слово приходится до четырёх
+# заметок колоды 02 — по одной на форму, — она и упирается в потолок
+# первой.
 MAX_NOTES_PER_BATCH = 100
-MAX_WORDS = MAX_NOTES_PER_BATCH // 3
+NOTES_PER_WORD_02 = 4
+MAX_WORDS = MAX_NOTES_PER_BATCH // NOTES_PER_WORD_02
 
 NOUN_LABELS = (
     "1-я форма (номинатив)",
     "2-я форма (генитив)",
     "3-я форма (партитив)",
+    "4-я форма (партитив мн. ч.)",
 )
 VERB_LABELS = (
     "1-я форма (ma-инфинитив)",
@@ -47,9 +50,15 @@ VERB_LABELS = (
     "3-я форма (mina-vorm)",
 )
 
-# Склоняются как существительное. Остальное либо спрягается (глагол),
-# либо не меняется вовсе и подписи форм не получает.
+# Склоняются как существительное — и только у них есть четвёртая форма,
+# партитив множественного числа. Остальное либо спрягается (глагол) и
+# обходится тремя, либо не меняется вовсе и подписи форм не получает.
 NOUN_LIKE = {"существительное", "прилагательное", "местоимение", "числительное"}
+
+FORMS_RULE = (
+    "4 non-empty forms for a declinable word (номинатив, генитив, партитив, "
+    "партитив мн. ч.), 3 for a verb, 1 for an invariant word"
+)
 
 
 @dataclasses.dataclass
@@ -132,7 +141,8 @@ def level_tag(course: str) -> str | None:
 
 
 def form_labels(pos: str, forms: list[str]) -> tuple[str, ...] | None:
-    """Подписи трёх форм. None — слово неизменяемое.
+    """Подписи форм — трёх, а у склоняемого слова четырёх. None — слово
+    неизменяемое.
 
     Неизменяемость определяем по самим формам, а не по части речи:
     наречие с тремя одинаковыми формами и местоимение вроде 'kogu'
@@ -141,7 +151,8 @@ def form_labels(pos: str, forms: list[str]) -> tuple[str, ...] | None:
     """
     if len({f.strip().lower() for f in forms}) == 1:
         return None
-    return VERB_LABELS if pos == "глагол" else NOUN_LABELS
+    labels = VERB_LABELS if pos == "глагол" else NOUN_LABELS
+    return labels[: len(forms)]
 
 
 def _pair(value: Any) -> tuple[str, str] | None:
@@ -180,16 +191,32 @@ def _validate(word: dict, seen: set[str], where: str, problems: list[str]) -> di
     forms = word.get("forms")
     if isinstance(forms, str):
         forms = [forms]
-    if not isinstance(forms, list) or not all(str(f).strip() for f in forms):
-        problems.append(f"{where} ({et}): forms — 3 non-empty forms (or 1 for an invariant word)")
+    if not isinstance(forms, list) or not forms or not all(str(f).strip() for f in forms):
+        problems.append(f"{where} ({et}): forms — {FORMS_RULE}")
         forms = []
-    elif len(forms) == 1:
-        forms = [str(forms[0]).strip()] * 3
-    elif len(forms) == 3:
-        forms = [str(f).strip() for f in forms]
     else:
-        problems.append(f"{where} ({et}): forms — got {len(forms)}, need 3 (or 1 for an invariant word)")
-        forms = []
+        forms = [str(f).strip() for f in forms]
+        # Неизменяемость видно по самим формам, а не по части речи:
+        # 'kogu' помечен местоимением, но партитива мн. ч. у него нет.
+        invariant = len({f.lower() for f in forms}) == 1
+        declinable = pos in NOUN_LIKE and not invariant
+        if len(forms) == 1:
+            forms = forms * 3
+        elif len(forms) == 3 and declinable:
+            problems.append(
+                f"{where} ({et}): forms — got 3, a declinable word needs 4: "
+                "номинатив, генитив, партитив, партитив мн. ч."
+            )
+            forms = []
+        elif len(forms) == 4 and not declinable:
+            problems.append(
+                f"{where} ({et}): forms — got 4, but the 4th form (партитив "
+                "мн. ч.) belongs to a declinable word only; a verb takes 3"
+            )
+            forms = []
+        elif len(forms) not in (3, 4):
+            problems.append(f"{where} ({et}): forms — got {len(forms)}, need {FORMS_RULE}")
+            forms = []
 
     raw_ex = word.get("ex")
     if isinstance(raw_ex, list) and len(raw_ex) in (1, 3):
@@ -230,7 +257,8 @@ def build_topic(
     if len(words) > MAX_WORDS:
         raise NoteDataError(
             [f"{len(words)} words at once — the add-on takes at most {MAX_WORDS} "
-             f"(deck 02 makes 3 notes per word, batch cap {MAX_NOTES_PER_BATCH}). "
+             f"(deck 02 makes up to {NOTES_PER_WORD_02} notes per word, batch cap "
+             f"{MAX_NOTES_PER_BATCH}). "
              "Split into several calls."]
         )
 
@@ -265,13 +293,19 @@ def build_topic(
         labels = form_labels(pos, forms)
 
         if form_in_example is not None:
+            # zip обрывается на трёх парах примеров: четвёртую форму
+            # проверять не на чем, примера у неё нет.
             for i, (form, (et, _)) in enumerate(zip(forms, ex), start=1):
                 if not form_in_example(form, et):
                     warnings.append(f"{w['word']}: form {i} ({form}) is absent from its example '{et}'")
 
-        fields01 = {"Russian": w["ru"], "Add Reverse": "1"}
-        for i, (form, (et, ru)) in enumerate(zip(forms, ex), start=1):
+        # Form4 кладём всегда: у глагола и неизменяемого слова её нет, и
+        # поле должно уехать в Anki пустым, а не пропасть из заметки —
+        # шаблон показывает четвёртую форму только когда она заполнена.
+        fields01 = {"Russian": w["ru"], "Add Reverse": "1", "Form4": ""}
+        for i, form in enumerate(forms, start=1):
             fields01[f"Form{i}"] = form
+        for i, (et, ru) in enumerate(ex, start=1):
             fields01[f"Ex{i}"] = et
             fields01[f"Ex{i}ru"] = ru
         notes01.append({"fields": fields01, "tags": sorted({*shared, pos})})
@@ -279,7 +313,15 @@ def build_topic(
         # Одна заметка на форму, слово за словом: Anki показывает новые
         # карточки в порядке добавления, и три формы должны попасться
         # подряд, а не с разбросом в неделю.
-        slots = zip(labels, forms, ex) if labels else [("", forms[0], ex[0])]
+        # Четвёртая форма идёт без примера — её спрашивают как есть.
+        slots = (
+            [
+                (label, form, ex[i] if i < len(ex) else ("", ""))
+                for i, (label, form) in enumerate(zip(labels, forms))
+            ]
+            if labels
+            else [("", forms[0], ex[0])]
+        )
         for label, form, (et, ru) in slots:
             notes02.append({
                 "fields": {

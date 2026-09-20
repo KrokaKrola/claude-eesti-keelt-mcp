@@ -26,19 +26,19 @@ Default course path (unless the user gives another): `kursuse eesti keel::A2`. I
 
 ## What you supply per word
 
-`topic_write` takes one entry per word and builds all five notes from it. Note types, field names, form labels, note order, tags and deck creation are the server's job — you never write them out:
+`topic_write` takes one entry per word and builds all six notes from it (five for a verb, three for an invariant word). Note types, field names, form labels, note order, tags and deck creation are the server's job — you never write them out:
 
 ```
 {"word": "jõgi", "pos": "существительное", "ru": "река",
- "forms": ["Jõgi", "jõe", "jõge"],
+ "forms": ["Jõgi", "jõe", "jõge", "jõgesid"],
  "ex": [["Jõgi on suvel väga soe.", "Река летом очень тёплая."],
         ["Jõe kaldal on ilus jalutada.", "Приятно гулять по берегу реки."],
         ["Me ületasime paadiga jõge.", "Мы переправлялись на лодке через реку."]],
  "sentence": ["Meile meeldib jõe ääres kalastada.", "Нам нравится рыбачить у реки."]}
 ```
 
-- `forms` — the three canonical forms by part of speech (table below). `Form1` may be capitalized (dictionary style), the other two lowercase. An invariant word takes a single form and a single `ex` pair.
-- `ex` — example N shows form N: `ex[0]` uses form 1, `ex[1]` form 2, `ex[2]` form 3. These land on the deck-01 card and are reused on the matching deck-02 notes.
+- `forms` — the canonical forms by part of speech (table below): **four for a declinable word** (nominative, genitive, partitive, **partitive plural**), three for a verb. `Form1` may be capitalized (dictionary style), the rest lowercase. An invariant word takes a single form and a single `ex` pair. Sending three forms for a noun, or four for a verb, is rejected outright — the server will not guess the missing one.
+- `ex` — still **three pairs, never four**: example N shows form N (`ex[0]` uses form 1, `ex[1]` form 2, `ex[2]` form 3). The 4th form is deliberately example-free — it is asked for as a bare form, and the deck-02 note for it carries no example. These pairs land on the deck-01 card and are reused on the matching deck-02 notes.
 - `sentence` — a brand-new sentence for deck 03, different wording from `ex`, normal capitalization.
 
 The server checks the forms actually appear in their examples and warns (by lemma, so `algama` in «Kool algab kell kaheksa» passes). A warning doesn't block the write; read it and decide.
@@ -47,17 +47,19 @@ The server checks the forms actually appear in their examples and warns (by lemm
 
 Older topics in this collection carry the topic as a **single underscored tag** instead (`kodused_tööd`, `tule_mulle_külla`). `vocab_pool` matches both conventions — it compares tags word by word — so don't retag old notes to "fix" them.
 
-## Part of speech → the 3 canonical forms
+## Part of speech → the canonical forms
 
-| POS                                                                                                                   | Form1 (label)                                                                                      | Form2 (label)                              | Form3 (label)                                           |
-| --------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------- | ------------------------------------------ | ------------------------------------------------------- |
-| Noun                                                                                                                  | nominative — `1-я форма (номинатив)`                                                               | genitive — `2-я форма (генитив)`           | partitive — `3-я форма (партитив)`                      |
-| Adjective                                                                                                             | same labels as noun                                                                                |                                            |                                                         |
-| Declinable pronoun (`keegi→kellegi→kedagi`, `ükski→ühegi→ühtegi`, …)                                                  | same labels as noun                                                                                |                                            |                                                         |
-| Verb                                                                                                                  | ma-infinitive — `1-я форма (ma-инфинитив)`                                                         | da-infinitive — `2-я форма (da-инфинитив)` | mina-vorm, 1st p. sg. present — `3-я форма (mina-vorm)` |
-| Invariant word — most adverbs (edasi, otsas, ringi…) and a handful of indeclinable pronouns/determiners (kogu, sama…) | same word repeated for Form1/2/3 in deck 01; **deck 02 gets a single note** with `Form` left empty |                                            |                                                         |
+| POS | Form1 (label) | Form2 (label) | Form3 (label) | Form4 (label) |
+| --- | --- | --- | --- | --- |
+| Noun | nominative — `1-я форма (номинатив)` | genitive — `2-я форма (генитив)` | partitive — `3-я форма (партитив)` | **partitive plural** — `4-я форма (партитив мн. ч.)` |
+| Adjective | same labels as noun | | | same as noun |
+| Declinable pronoun (`keegi→kellegi→kedagi`, `ükski→ühegi→ühtegi`, …) | same labels as noun | | | same as noun |
+| Verb | ma-infinitive — `1-я форма (ma-инфинитив)` | da-infinitive — `2-я форма (da-инфинитив)` | mina-vorm, 1st p. sg. present — `3-я форма (mina-vorm)` | **none** — verbs take 3 forms |
+| Invariant word — most adverbs (edasi, otsas, ringi…) and a handful of indeclinable pronouns/determiners (kogu, sama…) | same word repeated for Form1/2/3 in deck 01; **deck 02 gets a single note** with `Form` left empty | | | **none** |
 
-If the word the user sends is an **inflected form** (e.g. they copied "Erinevaid", "Viskab", "Valas", "Suled", "Ühtegi" straight out of a text), first work out the dictionary lemma and its POS, then derive the 3 canonical forms from that lemma — don't just repeat the inflected form across all three slots. Translate the **lemma** to Russian (its base meaning), not necessarily the narrower sense of the one inflected form the user happened to encounter. If a word arrives with no translation at all, work it out yourself and flag it in the final report rather than silently guessing forever without mentioning it.
+The 4th form is the **osastav mitmus** — `jõgi → jõgesid`, `raamat → raamatuid`, `suur → suuri`. Take the form Sõnaveeb gives; where the dictionary lists two variants, take the first one. Adjectives and declinable pronouns get it exactly like nouns. Verbs and invariant words do not: `Form4` goes into Anki empty and the card template simply hides it.
+
+If the word the user sends is an **inflected form** (e.g. they copied "Erinevaid", "Viskab", "Valas", "Suled", "Ühtegi" straight out of a text), first work out the dictionary lemma and its POS, then derive the canonical forms from that lemma (four if it declines, three if it is a verb) — don't just repeat the inflected form across the slots. Translate the **lemma** to Russian (its base meaning), not necessarily the narrower sense of the one inflected form the user happened to encounter. If a word arrives with no translation at all, work it out yourself and flag it in the final report rather than silently guessing forever without mentioning it.
 
 ## Vocabulary grounding (mandatory)
 
@@ -376,7 +378,7 @@ Simplicity and grounding pull the same way: short everyday clauses built from kn
    before composing, not after**: retrofitting a new word into a finished
    sentence is what turns into "no new words this time".
 
-6. **Per word**: identify lemma + POS, derive the 3 forms from the table above, and write the example sentences/translations per the grammar and A2-simplicity rules, **composing from the palette** — placing one dose word in every `NEW_EVERY`-th deck-03 sentence, and nothing new anywhere else on purpose.
+6. **Per word**: identify lemma + POS, derive the forms from the table above (four if it declines, three for a verb, one if it is invariant), and write the example sentences/translations per the grammar and A2-simplicity rules, **composing from the palette** — placing one dose word in every `NEW_EVERY`-th deck-03 sentence, and nothing new anywhere else on purpose.
 
 7. **Validate.** One batched `anki-vocab:text_check(sentences=[all sentences you wrote], targets=[the words being taught], topic=<the topic>)`. Rewrite anything marked `low` and check again — but keep the deliberate dose words, they are the point. Two rounds maximum. Rewrite whatever shows up on `leaning too hard on` as well: that one is not about a single sentence but about the set reading as variations on one word. `already heavy in this topic` is a preference — follow it where the swap is free.
 
@@ -386,7 +388,7 @@ Simplicity and grounding pull the same way: short everyday clauses built from kn
    anki-vocab:topic_write(topic="09. Vaba aeg", words=[<one entry per word>])
    ```
 
-   `course` defaults to `kursuse eesti keel::A2`; pass it only when the user names another root. Up to 33 words per call — split a longer list across calls.
+   `course` defaults to `kursuse eesti keel::A2`; pass it only when the user names another root. Up to 25 words per call — split a longer list across calls (deck 02 now makes up to four notes per word, and the add-on caps a batch at 100).
 
    Validation runs before anything is written: if an entry is malformed the call creates **no notes at all** and returns every complaint at once. Fix them all in one pass and call again. Duplicate filtering is not its job — step 2 already did that properly.
 
@@ -424,7 +426,7 @@ A regular noun and an invariant word, as `topic_write` wants them:
 
 ```
 {"word": "jõgi", "pos": "существительное", "ru": "река",
- "forms": ["Jõgi", "jõe", "jõge"],
+ "forms": ["Jõgi", "jõe", "jõge", "jõgesid"],
  "ex": [["Jõgi on suvel väga soe.", "Река летом очень тёплая."],
         ["Jõe kaldal on ilus jalutada.", "Приятно гулять по берегу реки."],
         ["Me ületasime paadiga jõge.", "Мы переправлялись на лодке через реку."]],

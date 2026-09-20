@@ -20,7 +20,7 @@ JOGI = {
     "word": "jõgi",
     "pos": "существительное",
     "ru": "река",
-    "forms": ["Jõgi", "jõe", "jõge"],
+    "forms": ["Jõgi", "jõe", "jõge", "jõgesid"],
     "ex": [
         ["Jõgi on suvel väga soe.", "Река летом очень тёплая."],
         ["Jõe kaldal on ilus jalutada.", "Приятно гулять по берегу реки."],
@@ -59,6 +59,12 @@ def test_level_from_course_tail():
 def test_labels_by_pos_and_invariance():
     assert form_labels("глагол", ["ujuma", "ujuda", "ujun"])[2] == "3-я форма (mina-vorm)"
     assert form_labels("существительное", ["jõgi", "jõe", "jõge"])[1] == "2-я форма (генитив)"
+    assert (
+        form_labels("существительное", ["jõgi", "jõe", "jõge", "jõgesid"])[3]
+        == "4-я форма (партитив мн. ч.)"
+    )
+    # Подписей ровно столько, сколько форм: глагол четвёртой не получает.
+    assert len(form_labels("глагол", ["ujuma", "ujuda", "ujun"])) == 3
     # Совпадающие формы у существительного — это ещё не неизменяемость.
     assert form_labels("существительное", ["Arvuti", "arvuti", "arvutit"]) is not None
     assert form_labels("наречие", ["edasi", "edasi", "edasi"]) is None
@@ -69,7 +75,7 @@ def test_three_decks_and_counts():
     assert [b.deck.split("::")[-1] for b in batches] == [
         "01. sõnad", "02. sõnad typein", "03. lause typein"
     ]
-    assert [len(b.notes) for b in batches] == [1, 3, 1]
+    assert [len(b.notes) for b in batches] == [1, 4, 1]
     assert warnings == []
 
 
@@ -77,34 +83,74 @@ def test_deck01_fields_match_model():
     (deck01, _, _), _ = build([JOGI])
     fields = deck01.notes[0]["fields"]
     assert set(fields) == {
-        "Russian", "Form1", "Form2", "Form3",
+        "Russian", "Form1", "Form2", "Form3", "Form4",
         "Ex1", "Ex1ru", "Ex2", "Ex2ru", "Ex3", "Ex3ru", "Add Reverse",
     }
     assert fields["Form1"] == "Jõgi" and fields["Form3"] == "jõge"
+    assert fields["Form4"] == "jõgesid"
     assert fields["Ex2"] == "Jõe kaldal on ilus jalutada."
     assert fields["Add Reverse"] == "1"
 
 
 def test_deck02_is_interleaved_word_by_word():
-    """Anki показывает новые карточки в порядке добавления: три формы
+    """Anki показывает новые карточки в порядке добавления: все формы
     одного слова должны идти подряд."""
     (_, deck02, _), _ = build([JOGI, KOGU])
     answers = [n["fields"]["Answer"] for n in deck02.notes]
-    assert answers == ["jõgi", "jõe", "jõge", "kogu"]
+    assert answers == ["jõgi", "jõe", "jõge", "jõgesid", "kogu"]
 
 
 def test_deck02_answers_are_lowercase_with_labels():
     (_, deck02, _), _ = build([JOGI])
     assert [n["fields"]["Form"] for n in deck02.notes] == [
-        "1-я форма (номинатив)", "2-я форма (генитив)", "3-я форма (партитив)"
+        "1-я форма (номинатив)", "2-я форма (генитив)", "3-я форма (партитив)",
+        "4-я форма (партитив мн. ч.)",
     ]
     assert deck02.notes[0]["fields"]["Answer"] == "jõgi"
     assert deck02.notes[0]["fields"]["Example_ET"] == "Jõgi on suvel väga soe."
 
 
+def test_fourth_form_note_has_no_example():
+    """Пример к партитиву мн. ч. не сочиняем: форму спрашивают как есть."""
+    (_, deck02, _), _ = build([JOGI])
+    fourth = deck02.notes[3]["fields"]
+    assert fourth["Answer"] == "jõgesid"
+    assert fourth["Example_ET"] == "" and fourth["Example_RU"] == ""
+
+
+def test_verb_keeps_three_forms_and_an_empty_form4():
+    verb = {
+        "word": "ujuma", "pos": "глагол", "ru": "плавать",
+        "forms": ["Ujuma", "ujuda", "ujun"],
+        "ex": [
+            ["Ma lähen ujuma.", "Я иду плавать."],
+            ["Mulle meeldib ujuda.", "Мне нравится плавать."],
+            ["Ma ujun igal hommikul.", "Я плаваю каждое утро."],
+        ],
+        "sentence": ["Suvel käime järvel ujumas.", "Летом ходим плавать на озеро."],
+    }
+    (deck01, deck02, _), _ = build([verb])
+    assert deck01.notes[0]["fields"]["Form4"] == ""
+    assert len(deck02.notes) == 3
+
+
+def test_declinable_word_without_the_fourth_form_is_rejected():
+    with pytest.raises(NoteDataError, match="needs 4"):
+        build([{**JOGI, "forms": ["Jõgi", "jõe", "jõge"]}])
+
+
+def test_verb_with_four_forms_is_rejected():
+    with pytest.raises(NoteDataError, match="declinable word only"):
+        build([{
+            **JOGI, "pos": "глагол",
+            "forms": ["Ujuma", "ujuda", "ujun", "ujusid"],
+        }])
+
+
 def test_invariant_word_gets_one_note_without_label():
     (deck01, deck02, _), _ = build([KOGU])
     assert deck01.notes[0]["fields"]["Form3"] == "Kogu"
+    assert deck01.notes[0]["fields"]["Form4"] == ""
     assert len(deck02.notes) == 1
     assert deck02.notes[0]["fields"]["Form"] == ""
 
@@ -160,10 +206,11 @@ def test_form_not_in_example_warns_but_does_not_block():
         seen.append((form, sentence))
         return form.lower() in sentence.lower()
 
-    batches, warnings = build([{**JOGI, "forms": ["Jõgi", "jõe", "kala"]}],
+    batches, warnings = build([{**JOGI, "forms": ["Jõgi", "jõe", "kala", "jõgesid"]}],
                               form_in_example=contains)
     assert len(batches[0].notes) == 1  # записи не мешает
     assert len(warnings) == 1 and "form 3" in warnings[0]
+    # Четвёртую форму не проверяем: примера у неё нет.
     assert len(seen) == 3
 
 

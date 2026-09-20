@@ -106,14 +106,24 @@ def parse_tags(raw: str) -> tuple[str | None, str | None, list[str]]:
     return level, pos, sorted(set(topics))
 
 
-def _three_forms(f: list[str]) -> tuple[list[tuple[str, str]], list[tuple[str, str]]]:
+def _three_forms(
+    f: list[str], n_forms: int = 3
+) -> tuple[list[tuple[str, str]], list[tuple[str, str]]]:
+    """Раскладка позиционная: Russian, формы, три пары примеров.
+
+    Число форм приходит снаружи, потому что типы заметок разошлись: у
+    'Estonian 3 Forms' добавилось поле Form4 (партитив мн. ч.), а старая
+    'Estonian Word Forms' осталась с тремя — и примеры у них съехали
+    друг относительно друга на одну позицию.
+    """
     slots = [
-        (name, clean(f[i]))
-        for i, name in ((1, "Form1"), (2, "Form2"), (3, "Form3"))
+        (f"Form{i}", clean(f[i]))
+        for i in range(1, n_forms + 1)
         if i < len(f) and clean(f[i])
     ]
     examples = []
-    for et_i, ru_i in ((4, 5), (6, 7), (8, 9)):
+    base = n_forms + 1
+    for et_i, ru_i in ((base, base + 1), (base + 2, base + 3), (base + 4, base + 5)):
         if et_i < len(f) and ru_i < len(f):
             et, ru = clean(f[et_i]), clean(f[ru_i])
             if et:
@@ -128,7 +138,7 @@ def parse_note(notetype: str, flds: str, tags: str) -> ParsedNote | None:
     lexical = False
 
     if notetype in ("Estonian 3 Forms", "Estonian Word Forms"):
-        slots, examples = _three_forms(f)
+        slots, examples = _three_forms(f, 4 if notetype == "Estonian 3 Forms" else 3)
         ru = clean(f[0]) if f else ""
         lexical = True
 

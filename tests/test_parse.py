@@ -14,18 +14,46 @@ def test_clean_strips_html_and_sound():
 
 def test_three_forms():
     p = note(
-        "Estonian 3 Forms", "шляпа", "kübar", "kübara", "kübarat",
+        "Estonian 3 Forms", "шляпа", "kübar", "kübara", "kübarat", "kübaraid",
         "See kübar on ilus.", "Эта шляпа красивая.",
         "Kübara värv on must.", "Цвет чёрный.",
         "Ma ei taha kübarat kanda.", "Не хочу носить.", "1",
         tags="A2 одежда существительное",
     )
     assert p.ru == "шляпа"
-    assert [f for _, f in p.slots] == ["kübar", "kübara", "kübarat"]
+    assert [f for _, f in p.slots] == ["kübar", "kübara", "kübarat", "kübaraid"]
     assert p.level == "a2" and p.pos == "существительное"
     assert p.topics == ["одежда"]
     assert len(p.examples) == 3
     assert not p.is_phrase
+
+
+def test_fourth_form_may_be_empty():
+    """У глагола четвёртой формы нет, поле уезжает в Anki пустым."""
+    p = note(
+        "Estonian 3 Forms", "плавать", "ujuma", "ujuda", "ujun", "",
+        "Ma lähen ujuma.", "Я иду плавать.",
+        "Mulle meeldib ujuda.", "Мне нравится плавать.",
+        "Ma ujun igal hommikul.", "Я плаваю каждое утро.", "1",
+        tags="A2 глагол",
+    )
+    assert [f for _, f in p.slots] == ["ujuma", "ujuda", "ujun"]
+    assert len(p.examples) == 3
+
+
+def test_old_three_field_model_keeps_its_layout():
+    """'Estonian Word Forms' поля Form4 не получила — примеры у неё
+    начинаются на позицию раньше."""
+    p = note(
+        "Estonian Word Forms", "собака", "koer", "koera", "koera",
+        "Koer magab.", "Собака спит.",
+        "Koera nimi on Muri.", "Собаку зовут Мури.",
+        "Ma näen koera.", "Я вижу собаку.", "1",
+        tags="A1 существительное",
+    )
+    assert [f for _, f in p.slots] == ["koer", "koera", "koera"]
+    assert p.examples[0] == ("Koer magab.", "Собака спит.")
+    assert len(p.examples) == 3
 
 
 def test_typein_is_one_form_per_note():
