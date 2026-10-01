@@ -28,35 +28,102 @@ POS_CODES = {
 }
 
 
+# Сравнительная степень, которую по основе не восстановить.
+_SUPPLETIVE = {"parem": "hea", "parim": "hea"}
+
+# Разборы, которые не равны самостоятельному слову: наречие или
+# послелог, застывший из падежной формы ('jalga', 'lukku', 'samas').
+_FROZEN = {"D", "K"}
+
+Analyses = tuple[tuple[str, str], ...]
+
+
 class Lemmatizer:
     def __init__(self, con: sqlite3.Connection):
         self.con = con
         self.vm = Vabamorf.instance()
-        self.mem: dict[str, tuple[tuple[tuple[str, str], ...], ...]] = {}
+        # слово → (основной разбор, все разборы, есть ли слово в словаре)
+        self.mem: dict[str, tuple[Analyses, Analyses, bool]] = {}
+        self.positives: dict[str, str] = {}
         self.hits = 0
         self.misses = 0
         for word, blob in con.execute("select word, analyses from lemma_cache"):
-            self.mem[word] = tuple(
-                tuple(tuple(a) for a in group) for group in json.loads(blob)
+            primary, variants, known = json.loads(blob)
+            self.mem[word] = (
+                tuple(tuple(a) for a in primary),
+                tuple(tuple(a) for a in variants),
+                known,
             )
 
-    def _read(self, word: str, disambiguate: bool) -> tuple[tuple[str, str], ...]:
+    def _pairs(self, entry: dict) -> list[tuple[str, str]]:
+        out = []
+        for a in entry.get("analysis", ()):
+            lem = _MARKERS_RE.sub("", a.get("lemma", "")).lower().strip()
+            code = a.get("partofspeech", "")
+            if code == "C":
+                lem = self.positive(lem)
+            if lem and (lem, code) not in out:
+                out.append((lem, code))
+        return out
+
+    def _read(self, word: str, disambiguate: bool) -> Analyses:
         try:
             raw = self.vm.analyze([word], disambiguate=disambiguate)
         except Exception:
             return ()
-        out: list[tuple[str, str]] = []
-        seen = set()
-        for entry in raw:
-            for a in entry.get("analysis", ()):
-                lem = _MARKERS_RE.sub("", a.get("lemma", "")).lower().strip()
-                pair = (lem, a.get("partofspeech", ""))
-                if lem and pair not in seen:
-                    seen.add(pair)
-                    out.append(pair)
-        return tuple(out)
+        return tuple(pair for entry in raw for pair in self._pairs(entry))
 
-    def _cached(self, word: str) -> tuple[tuple[tuple[str, str], ...], ...]:
+    def positive(self, comparative: str) -> str:
+        """Сравнительная степень → исходное прилагательное.
+
+        Vabamorf считает 'olulisem' отдельной леммой, и в отчётах
+        сравнительная степень знакомого слова выходила новым словом.
+        Сравнительная степень строится от основы генитива плюс -m
+        (suure-m, olulise-m, tervisliku-m), иногда с a → e (pika → pikem,
+        sooja → soojem): отрезаем -m и проверяем, что остаток — генитив
+        прилагательного. Не вышло — оставляем как есть.
+        """
+        if comparative in _SUPPLETIVE:
+            return _SUPPLETIVE[comparative]
+        cached = self.positives.get(comparative)
+        if cached is not None:
+            return cached
+        found = comparative
+        if comparative.endswith("m") and len(comparative) > 3:
+            stem = comparative[:-1]
+            stems = [stem] + ([stem[:-1] + "a"] if stem.endswith("e") else [])
+            for candidate in stems:
+                try:
+                    raw = self.vm.analyze(
+                        [candidate], disambiguate=False, guess=False, propername=False
+                    )
+                except Exception:
+                    break
+                lemma = next(
+                    (
+                        _MARKERS_RE.sub("", a["lemma"]).lower()
+                        for entry in raw
+                        for a in entry.get("analysis", ())
+                        if a.get("partofspeech") == "A" and a.get("form") == "sg g"
+                    ),
+                    None,
+                )
+                if lemma:
+                    found = lemma
+                    break
+        self.positives[comparative] = found
+        return found
+
+    def _in_dictionary(self, word: str) -> bool:
+        try:
+            raw = self.vm.analyze(
+                [word], disambiguate=False, guess=False, propername=False
+            )
+        except Exception:
+            return True
+        return any(entry.get("analysis") for entry in raw)
+
+    def _cached(self, word: str) -> tuple[Analyses, Analyses, bool]:
         key = word.lower()
         cached = self.mem.get(key)
         if cached is not None:
@@ -64,7 +131,7 @@ class Lemmatizer:
             return cached
         self.misses += 1
         primary = self._read(word, True) or ((key, ""),)
-        result = (primary, self._read(word, False))
+        result = (primary, self._read(word, False), self._in_dictionary(key))
         self.mem[key] = result
         # Кэш — только ускорение. Запись делаем по возможности: индекс
         # может быть заблокирован другим процессом (сборка из CLI, второй
@@ -91,6 +158,37 @@ class Lemmatizer:
         карточке это шарф. Полный список нужен, чтобы тег части речи с
         карточки было из чего выбрать."""
         return self._cached(word)[1]
+
+    def in_dictionary(self, word: str) -> bool:
+        """Знает ли слово сам словарь Vabamorf — без угадывания.
+
+        Иначе опечатка неотличима от нового слова: 'söin' вместо 'sõin'
+        анализатор угадывает существительным, и в отчёте она выглядела
+        честным новым словом, а 'mureled' вместо 'murelid' даже ушло в
+        дозу. Сложные слова словарь собирает сам: kaerahelbepuder он знает.
+        """
+        return self._cached(word)[2]
+
+    def sentence(self, tokens: list[str]) -> list[tuple[str, str]]:
+        """(лемма, код части речи) для каждого слова — в контексте фразы.
+
+        Слово по одному разбирается плохо: снятие омонимии тогда просто
+        берёт частотный разбор, и 'jalga' в «pani kingad jalga» выходило
+        наречием, а не ногой. Регистр сохраняем: только по нему видно,
+        что 'Lätist' — Латвия, а не неизвестное слово.
+        """
+        if not tokens:
+            return []
+        try:
+            raw = self.vm.analyze(list(tokens), disambiguate=True)
+        except Exception:
+            raw = []
+        if len(raw) != len(tokens):
+            return [self.analyses(t)[0] for t in tokens]
+        return [
+            (pairs[0] if (pairs := self._pairs(entry)) else self.analyses(tok)[0])
+            for tok, entry in zip(tokens, raw)
+        ]
 
     def is_name(self, word: str) -> bool:
         """Собственное имя: все разборы — H (Tallinn, Eesti).
@@ -126,9 +224,16 @@ class Lemmatizer:
         форме, ему верим: 'koli' — это хлам, и подхватив из вариантов
         чужую лемму kolima (переезжать), мы выдали бы незнакомое слово
         за знакомое. А вот 'salli' словарной формой не является, и
-        выбор между sall и sallima честно неоднозначен."""
+        выбор между sall и sallima честно неоднозначен.
+
+        Исключение — наречие или послелог, застывший из падежной формы:
+        'lukku' сам себе лемма, но это и иллатив от lukk. Поверив ему,
+        text_check считал 'lukku' новым словом рядом с целевым lukk.
+        Так же и с догадкой анализатора про незнакомое ему слово."""
         key = word.strip().lower()
-        found = {lem for lem, _ in self.analyses(key)}
-        if key not in found:
+        primary = self.analyses(key)
+        found = {lem for lem, _ in primary}
+        frozen = {code for _, code in primary} <= _FROZEN
+        if key not in found or frozen or not self.in_dictionary(key):
             found |= {lem for lem, _ in self.variants(key)}
         return found

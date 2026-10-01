@@ -98,3 +98,12 @@ def test_all_estonian_card_is_a_drill():
 
 def test_strip_cyrillic():
     assert strip_cyrillic("Переведи: Ma olen siin.") == "Ma olen siin"
+
+
+def test_foreign_letters_do_not_split_a_word():
+    """'éesti' резалось на 'e' и 'esti', и опечатку никто не узнавал."""
+    from anki_vocab.parse import words
+
+    assert words("Ma suhtlen éesti keeles") == ["Ma", "suhtlen", "éesti", "keeles"]
+    assert words("éesti") == ["éesti"], "составная диакритика"
+    assert words("ребёнок laps") == ["laps"]

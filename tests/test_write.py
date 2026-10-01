@@ -239,9 +239,9 @@ def fake_novel(new_by_sentence: dict[str, tuple[list[str], list[str]]]):
     return find
 
 
-def dose_of(words, novel, topic=TOPIC):
+def dose_of(words, novel, topic=TOPIC, history=(0, [])):
     _batches, _warnings, dose = build_topic(
-        COURSE, topic, words, novel_words=fake_novel(novel)
+        COURSE, topic, words, novel_words=fake_novel(novel), dose_history=history
     )
     return dose
 
@@ -258,7 +258,8 @@ def test_expected_dose_scales_with_topic_size_and_stops_at_the_cap():
     from anki_vocab.write import expected_dose
 
     assert expected_dose(0) == 0
-    assert expected_dose(1) == 1      # маленькая тема всё равно получает одно
+    assert expected_dose(1) == 0      # одно слово — ещё не повод для нового
+    assert expected_dose(2) == 0
     assert expected_dose(3) == 1
     assert expected_dose(9) == 3
     assert expected_dose(30) == 5     # потолок NEW_MAX
@@ -266,9 +267,27 @@ def test_expected_dose_scales_with_topic_size_and_stops_at_the_cap():
 
 def test_dose_collects_new_words_and_marks_a_shortfall():
     words = [JOGI, KOGU]
-    dose = dose_of(words, {JOGI["sentence"][0]: ([], [])})
+    dose = dose_of(words, {JOGI["sentence"][0]: ([], [])}, history=(1, []))
     assert dose.counted and dose.new == [] and dose.short
     assert dose.expected == 1
+
+
+def test_dose_spans_calls_of_one_topic_filling():
+    """Пять вызовов по слову раньше требовали пять новых слов — теперь
+    они складываются в одну тему из пяти слов: одно новое на всех."""
+    novel = {JOGI["sentence"][0]: (["keefir"], [])}
+    assert dose_of([JOGI], novel).over, "одно слово — новое уже перебор"
+    third = dose_of([JOGI], novel, history=(2, []))
+    assert not third.over and not third.short
+    fourth = dose_of([JOGI], novel, history=(3, ["keefir"]))
+    assert fourth.over and fourth.expected == 0
+
+
+def test_cap_is_per_filling_not_per_call():
+    """Тема, разбитая на пачки, получала потолок NEW_MAX на каждую."""
+    placed = ["a", "b", "c", "d", "e"]
+    dose = dose_of([JOGI], {JOGI["sentence"][0]: (["f"], [])}, history=(40, placed))
+    assert dose.expected_total == 5 and dose.over
 
 
 def test_dose_counts_new_words_and_keeps_half_known_apart():
@@ -290,17 +309,39 @@ def test_dose_line_reaches_the_report():
     out, dose = write_topic(
         COURSE, TOPIC, [JOGI, KOGU],
         novel_words=fake_novel({JOGI["sentence"][0]: (["ümbrik"], ["sall"])}),
+        dose_history=(1, []),
         dry_run=True,
     )
     assert "deck-03 new words: 1 of 1 expected — ümbrik" in out
     assert "half-known" in out and "sall" in out
-    assert "⚠ short" not in out
+    assert "this topic in the last" in out
+    assert "⚠ short" not in out and "⚠ over" not in out
     assert dose.new == ["ümbrik"]
+
+
+def test_over_dose_line_explains_itself():
+    out, _dose = write_topic(
+        COURSE, TOPIC, [JOGI],
+        novel_words=fake_novel({JOGI["sentence"][0]: (["keefir"], [])}),
+        dry_run=True,
+    )
+    assert "1 of 0 expected ⚠ over — keefir" in out
+    assert "counted across calls" in out
+
+
+def test_typos_reach_the_report():
+    out, _dose = write_topic(
+        COURSE, TOPIC, [JOGI],
+        spell_check=lambda texts, taught: [("söi", texts[0])],
+        dry_run=True,
+    )
+    assert "likely typos" in out and "söi —" in out
 
 
 def test_short_dose_line_explains_itself():
     out, _dose = write_topic(
-        COURSE, TOPIC, [JOGI], novel_words=fake_novel({}), dry_run=True
+        COURSE, TOPIC, [JOGI], novel_words=fake_novel({}),
+        dose_history=(2, []), dry_run=True,
     )
     assert "deck-03 new words: 0 of 1 expected ⚠ short — none" in out
     assert "teaches nothing beyond its target word" in out

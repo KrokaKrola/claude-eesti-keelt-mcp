@@ -12,6 +12,7 @@ import itertools
 import json
 import logging
 import os
+import subprocess
 import sys
 import sqlite3
 import textwrap
@@ -23,7 +24,9 @@ from pathlib import Path
 
 from mcp.server.mcpserver import MCPServer
 
-from .collection import deck_names, open_snapshot
+from . import ekilex, journal
+from .flow import Flow, summary as flow_summary
+from .collection import deck_names, snapshot
 from .config import COLLECTION, DATA_DIR, INDEX, PROJECT_ROOT
 from .index import ensure_fresh, open_index
 from .lemma import Lemmatizer
@@ -39,15 +42,18 @@ from .query import (
     format_repeats,
     format_text_check,
     sentence_ok,
+    topic_decks,
     topic_state as _topic_state,
 )
 from .passthrough import catalog, describe, invoke, mutating, names
-from .write import AnkiError, NoteDataError, endpoint, write_topic
+from .write import AnkiError, NoteDataError, endpoint, form_labels, write_topic
 
 # Пишем только своим логгером и не через root: иначе на уровне DEBUG
 # matplotlib, который тянет за собой estnltk, заливает лог своим шумом.
+# PID в каждой строке: Claude Desktop поднимает сервер двумя процессами,
+# оба пишут в один файл, и номера вызовов #N у них пересекаются.
 _FORMAT = logging.Formatter(
-    "%(asctime)s %(levelname)-5s %(call)s%(message)s",
+    "%(asctime)s %(levelname)-5s [%(process)d] %(call)s%(message)s",
     datefmt="%Y-%m-%d %H:%M:%S",
     defaults={"call": ""},
 )
@@ -57,6 +63,12 @@ _FORMAT = logging.Formatter(
 # Без номера разбор двух вызовов подряд склеивается в одну кашу.
 _calls = itertools.count(1)
 _call_no = contextvars.ContextVar("anki_vocab_call", default=0)
+# Что инструмент хочет добавить в свою запись журнала сверх аргументов
+# и ответа (topic_write кладёт сюда сводку сценария).
+_journal_extra: contextvars.ContextVar[dict | None] = contextvars.ContextVar(
+    "anki_vocab_journal_extra", default=None
+)
+_flow = Flow()
 
 
 class _CallNumber(logging.Filter):
@@ -145,6 +157,7 @@ def traced(fn):
         # Номер снимаем в finally: без этого всё, что пишется между
         # вызовами, приписывается предыдущему.
         token = _call_no.set(next(_calls))
+        extra_token = _journal_extra.set({})
         try:
             args = ", ".join(
                 f"{k}={_short(v)}" for k, v in kwargs.items() if v is not None
@@ -158,15 +171,26 @@ def traced(fn):
             started = time.perf_counter()
             try:
                 out = fn(**kwargs)
-            except Exception:
+            except Exception as exc:
                 log.exception("✗ %s упал", fn.__name__)
+                journal.record(
+                    fn.__name__, _call_no.get(), kwargs, None,
+                    (time.perf_counter() - started) * 1000,
+                    error=f"{type(exc).__name__}: {exc}",
+                    extra=_journal_extra.get(),
+                )
                 raise
             ms = (time.perf_counter() - started) * 1000
             log.info("← %s: %d симв. ≈%d токенов, %.0f мс",
                      fn.__name__, len(out), len(out) // 3, ms)
             log.debug("  ответ %s:\n%s", fn.__name__, out)
+            journal.record(
+                fn.__name__, _call_no.get(), kwargs, out, ms,
+                extra=_journal_extra.get(),
+            )
             return out
         finally:
+            _journal_extra.reset(extra_token)
             _call_no.reset(token)
 
     return wrapper
@@ -217,15 +241,24 @@ def _fresh() -> Vocab:
     description=(
         "Are these words already in the collection? Takes any inflected "
         "form: kübarat finds kübar. ✓ — the word has a word card, ~ — it "
-        "only ever appeared inside example sentences, ✗ — not there at all. "
-        "Use it before creating cards so duplicates don't pile up."
+        "only ever appeared inside example sentences (comes with how often "
+        "and one sentence where it was met), ✗ — not there at all. "
+        "Use it before creating cards so duplicates don't pile up. A '~' "
+        "word is not a duplicate: the learner decides whether it gets a card."
     )
 )
 @traced
 def vocab_check(words: list[str]) -> str:
     with _lock:
         vocab = _fresh()
-        hits = [vocab.lookup(w) for w in words]
+        hits = vocab.check(words)
+        marks = {}
+        for h in hits:
+            mark = {KNOWN: "✓", SEEN: "~", UNKNOWN: "✗"}[h.status]
+            marks[h.query.strip().lower()] = mark
+            if h.lemma:
+                marks.setdefault(h.lemma, mark)
+        _flow.note("vocab_check", marks=marks)
         # Не только счёт, но и разбивка по словам: этим же вызовом
         # набирают дозу новых слов для колоды 03 (✗) и отсеивают дубли
         # (✓), и постфактум надо видеть, что куда попало.
@@ -283,6 +316,7 @@ def vocab_pool(
             level=level, topics=topics, pos=pos, limit=limit,
             stale_days=stale_days,
         )
+        _flow.note("vocab_pool", topics=topics or [])
         # Из чего вообще было позволено составлять предложения. Без этой
         # строки однообразие в готовой теме не отличить от бедной палитры.
         detail(
@@ -371,15 +405,28 @@ def text_check(
 ) -> str:
     with _lock:
         vocab = _fresh()
-        goal = {t.strip().lower() for t in targets or []}
+        goal = vocab.goal(targets)
         results = [vocab.check_sentence(s, targets=goal) for s in sentences]
+        _flow.note("text_check", topic=topic, sentences=[s.strip() for s in sentences])
+        known_topic = bool(topic) and bool(topic_decks(vocab.con, topic))
         repeats = vocab.repeats(
-            [content for _p, _n, content in results], topic=topic, targets=goal
+            [r.content for r in results],
+            topic=topic if known_topic else None,
+            targets=goal,
         )
         _log_text_check(
             sentences, results, goal, vocab, min_coverage, repeats, topic
         )
-        return format_text_check(results, min_coverage, repeats, bool(topic))
+        out = format_text_check(results, min_coverage, repeats, known_topic)
+        if topic and not known_topic:
+            # Опечатка в имени темы — и проверка однообразия против уже
+            # написанного молча считала ноль.
+            detail("⚠ темы '%s' нет в индексе — повторы считались только в пачке", topic)
+            out += (
+                f"\ntopic '{topic}' is not in the index — monotony was counted "
+                "within this batch only (a new topic, or check the spelling)"
+            )
+        return out
 
 
 def _log_text_check(
@@ -394,14 +441,16 @@ def _log_text_check(
     видно — пришлось перезапускать разбор руками.
     """
     failed = [
-        i for i, (pct, new, _c) in enumerate(results, 1)
-        if not sentence_ok(pct, new, min_coverage)
+        i for i, r in enumerate(results, 1)
+        if not sentence_ok(r.pct, r.new, min_coverage)
     ]
-    fresh = {w for _p, new, _c in results for w in new}
-    average = round(sum(pct for pct, _n, _c in results) / len(results)) if results else 0
-    detail("%d предложений, средний охват %d%%, low %d, новых слов %d%s",
+    fresh = {w for r in results for w in r.new}
+    typos = {w for r in results for w in r.typos}
+    average = round(sum(r.pct for r in results) / len(results)) if results else 0
+    detail("%d предложений, средний охват %d%%, low %d, новых слов %d%s%s",
            len(results), average, len(failed), len(fresh),
-           _listing(": ", sorted(fresh)))
+           _listing(": ", sorted(fresh)),
+           _listing(" · ⚠ опечатки?: ", sorted(typos)))
     _log_monotony(repeats)
     # Что именно не передали, видно и по строке вызова, но там это
     # отсутствие аргумента, а здесь — потерянная проверка.
@@ -413,7 +462,7 @@ def _log_text_check(
                "в теме не считались")
 
     verbose = log.isEnabledFor(logging.DEBUG)
-    for i, (text, (pct, new, _c)) in enumerate(zip(sentences, results), 1):
+    for i, (text, (pct, new, _c, _t)) in enumerate(zip(sentences, results), 1):
         if not new or not (verbose or i in failed):
             continue
         novel = vocab.novel(text, goal)
@@ -482,10 +531,13 @@ def word_forms(word: str) -> str:
 def topic_state(topic: str) -> str:
     with _lock:
         _fresh()
+        _flow.note("topic_state", topic=topic)
+        decks = topic_decks(_con, topic)
         rows = _con.execute(
-            "select deck, count(*) from entry where deck like ? group by 1 order by 1",
-            (f"%{topic.strip()}%",),
-        ).fetchall()
+            f"select deck, count(*) from entry where deck in ({','.join('?' * len(decks))})"
+            " group by 1 order by 1",
+            decks,
+        ).fetchall() if decks else []
         detail("%s: %s", topic, " · ".join(
             f"{deck.split('::')[-1]}={n}" for deck, n in rows
         ) or "нет в индексе")
@@ -498,10 +550,16 @@ def _form_in_example(vocab: Vocab):
     ругалось бы на каждой второй карточке."""
 
     def check(form: str, sentence: str) -> bool:
-        target = vocab.lem.lemmas(form)
-        if not target:  # не разобрали слово — не придираемся
+        if form.strip().lower() in sentence.lower():
             return True
-        return any(target & vocab.lem.lemmas(w) for w in split_words(sentence))
+        # Фразовый глагол — несколько слов, и каждое должно найтись: раньше
+        # 'saan teada' разбиралось как одно слово и не находилось никогда.
+        sentence_lemmas = [vocab.lem.lemmas(w) for w in split_words(sentence)]
+        for part in split_words(form):
+            target = vocab.lem.lemmas(part)
+            if target and not any(target & found for found in sentence_lemmas):
+                return False
+        return True
 
     return check
 
@@ -518,10 +576,7 @@ def _novel_words(vocab: Vocab):
         key = frozenset(taught)
         goal = goals.get(key)
         if goal is None:
-            goal = set(taught)
-            for word in taught:
-                goal |= vocab.lem.lemmas(word)
-            goals[key] = goal
+            goal = goals[key] = vocab.goal(taught)
         novel = vocab.novel(sentence, goal)
         return (
             [lemma for lemma, _form in novel.unknown],
@@ -538,16 +593,80 @@ def _repeat_check(vocab: Vocab, topic: str):
     в 12. Poes именно тем, что расходился по вызовам двойками и тройками.
     """
     def find(sentences: list[str], taught: set[str]):
-        goal = set(taught)
-        for word in taught:
-            goal |= vocab.lem.lemmas(word)
-        batch = [vocab.check_sentence(s, targets=goal)[2] for s in sentences]
+        goal = vocab.goal(taught)
+        batch = [vocab.check_sentence(s, targets=goal).content for s in sentences]
         found = vocab.repeats(batch, topic=topic, targets=goal)
         # Держим результат при себе: отчёт уходит модели, а в лог его
         # надо положить отдельно — иначе постфактум видно только то,
         # что модель решила написать в ответе.
         find.found = found
         return found
+
+    find.found = []
+    return find
+
+
+def _drafted_sentences(words: list) -> list[str]:
+    """Все предложения, которые вызов topic_write несёт в колоду."""
+    out = []
+    for w in words:
+        if not isinstance(w, dict):
+            continue
+        for pair in (w.get("ex") or []) + [w.get("sentence")]:
+            if isinstance(pair, (list, tuple)) and pair:
+                out.append(str(pair[0]))
+    return out
+
+
+def _dictionary_check(vocab: Vocab):
+    """Формы слов против словаря EKI — до записи, с отказом при расхождении.
+
+    Не зависит от того, звала ли модель word_paradigm: 'kudub' вместо
+    koob и 'kesküte' вместо keskküte прошли бы и сюда, проверяй их только
+    модель. Словарь недоступен — пишем, но говорим, что формы не проверены.
+    """
+    def check(words: list[dict]) -> tuple[list[str], list[str]]:
+        lexical = [w for w in words if len({f.lower() for f in w["forms"]}) > 1]
+        if not lexical:
+            return [], []
+        try:
+            found = ekilex.Dictionary(vocab.con).lookup_many([w["word"] for w in lexical])
+        except ekilex.EkilexError as exc:
+            check.unchecked = str(exc)
+            return [], [f"forms NOT checked against the dictionary: {exc}"]
+        problems: list[str] = []
+        warnings: list[str] = []
+        for w in lexical:
+            verb = w["pos"] == "глагол"
+            wrong, unsure = ekilex.check_forms(
+                w["word"], verb, w["forms"], found[w["word"].strip().lower()],
+                form_labels(w["pos"], w["forms"]) or (),
+            )
+            problems += wrong
+            warnings += unsure
+        check.checked = len(lexical)
+        return problems, warnings
+
+    check.checked = 0
+    check.unchecked = None
+    return check
+
+
+def _spell_check(vocab: Vocab):
+    """Слова, которых нет в словаре, — по всему, что уезжает в колоду.
+
+    'Laps söi' (вместо sõi) и 'mustad mureled' (вместо murelid) так и
+    записались: text_check показал их новыми словами, а опечатку от
+    нового слова по той строке не отличить.
+    """
+    def find(sentences: list[str], taught: set[str]) -> list[tuple[str, str]]:
+        goal = vocab.goal(taught)
+        find.found = [
+            (word, text)
+            for text in sentences
+            for word in vocab.check_sentence(text, targets=goal).typos
+        ]
+        return find.found
 
     find.found = []
     return find
@@ -573,6 +692,9 @@ def _repeat_check(vocab: Vocab, topic: str):
         "enough for an invariant word), sentence (pair ['new sentence', "
         "'russian'] for deck 03).\n"
         "The 4th form takes no example — ex stays at 3 pairs. "
+        "Forms are checked against the EKI dictionary before writing: a form "
+        "the dictionary does not have rejects the whole call and the reply "
+        "shows the right one — take the forms from word_paradigm first. "
         "Up to 25 words per call. Validation runs before the write: on bad "
         "data no note is created at all and every complaint comes back at "
         "once. dry_run=true shows what would be written, touching nothing.\n"
@@ -594,17 +716,35 @@ def topic_write(
     with _lock:
         vocab = _fresh()
         seek_repeats = _repeat_check(vocab, topic)
+        seek_typos = _spell_check(vocab)
+        seek_forms = _dictionary_check(vocab)
+        dose_key = f"{course}::{topic}".strip().lower()
+        if dry_run:
+            _flow.note("topic_write_dry", topic=topic)
+        else:
+            # Сводка шагов — до записи: по ней потом видно, на чём модель
+            # срезала путь, даже если запись затем упала.
+            steps = _flow.before_write(
+                topic,
+                [w.get("word", "") for w in words if isinstance(w, dict)],
+                _drafted_sentences(words),
+            )
+            detail("сценарий: %s", flow_summary(steps))
+            _journal_extra.get()["flow"] = steps
         try:
             report, dose = write_topic(
                 course, topic, words,
                 form_in_example=_form_in_example(vocab),
                 novel_words=_novel_words(vocab),
                 repeat_check=seek_repeats,
+                spell_check=seek_typos,
+                form_check=seek_forms,
+                dose_history=vocab.dose_history(dose_key),
                 dry_run=dry_run,
             )
         except NoteDataError as exc:
             detail("⚠ ничего не записано, ошибок в данных %d: %s",
-                   len(exc.problems), " · ".join(exc.problems[:5]))
+                   len(exc.problems), " · ".join(exc.problems))
             return "nothing written, fix the data:\n" + "\n".join(
                 f"  {p}" for p in exc.problems
             )
@@ -618,21 +758,118 @@ def topic_write(
         # Дозу и однообразие дублируем отдельными строками поверх отчёта:
         # их ищут грепом по всем сессиям сразу.
         detail(
-            "доза колоды 03: %d из %d ожидаемых%s — %s%s%s",
+            "доза колоды 03: %d из %d ожидаемых%s%s — %s%s%s%s",
             len(dose.new), dose.expected,
             " ⚠ мало" if dose.short else "",
+            " ⚠ перебор" if dose.over else "",
             ", ".join(dose.new) or "нет",
+            f" · ранее в заполнении темы: слов {dose.prior_words}, новых "
+            f"{len(dose.prior_new)}" if dose.prior_words else "",
             f" · полузнакомых {len(dose.half)}: {', '.join(dose.half)}"
             if dose.half else "",
             f" · ⚠ два новых слова разом в {len(dose.crowded)} предл."
             if dose.crowded else "",
         )
         _log_monotony(seek_repeats.found)
+        if seek_forms.unchecked:
+            detail("⚠ формы не сверены со словарём: %s", seek_forms.unchecked)
+        else:
+            detail("формы сверены со словарём EKI: слов %d", seek_forms.checked)
+        if seek_typos.found:
+            detail("⚠ опечатки?: %s", ", ".join(w for w, _ in seek_typos.found))
+        _journal_extra.get().update({
+            "dose": {
+                "new": dose.new, "half": dose.half, "expected": dose.expected,
+                "prior_words": dose.prior_words, "prior_new": dose.prior_new,
+                "short": dose.short, "over": dose.over,
+            },
+            "typos": seek_typos.found,
+            "forms_unchecked": seek_forms.unchecked,
+        })
         if not dry_run:
+            vocab.record_dose(dose_key, dose.words, dose.new)
             # Свои заметки помечаем: иначе досборка отчитается о них как
             # о появившихся мимо сервера.
             ensure_fresh(_con, own_write=True)  # новые слова сразу видны vocab_check
     return report
+
+
+@mcp.tool(
+    description=(
+        "The canonical card forms of words straight from the EKI dictionary "
+        "(Ekilex — the base behind Sõnaveeb): nominative / genitive / "
+        "partitive / partitive plural for a declinable word, ma- / "
+        "da-infinitive / mina-vorm for a verb. Call it once for the whole "
+        "list before composing cards and take the forms from it — do not "
+        "derive them yourself. Where the dictionary gives variants they are "
+        "joined with '~': take the first. 'no partitive plural' means send "
+        "3 forms. Inflected input (Erinevaid) is resolved to its lemma. "
+        "topic_write checks the forms against the same dictionary."
+    )
+)
+@traced
+def word_paradigm(words: list[str]) -> str:
+    with _lock:
+        vocab = _fresh()
+        dictionary = ekilex.Dictionary(vocab.con)
+        try:
+            found = dictionary.lookup_many(words)
+            # Слово в тексте бывает словоформой: словарь ищет только по
+            # заголовку, поэтому ненайденное пробуем ещё раз леммой.
+            lemmas = {
+                w: sorted(vocab.lem.lemmas(w) - {w})
+                for w, paradigms in found.items() if not paradigms
+            }
+            by_lemma = dictionary.lookup_many([l for ls in lemmas.values() for l in ls])
+        except ekilex.EkilexError as exc:
+            detail("⚠ словарь недоступен: %s", exc)
+            return f"dictionary unavailable: {exc}"
+    lines = []
+    missing = []
+    for word, paradigms in found.items():
+        shown = word
+        if not paradigms:
+            hits = [(l, by_lemma[l]) for l in lemmas.get(word, []) if by_lemma.get(l)]
+            if not hits:
+                missing.append(word)
+                lines.append(f"{word} — not in the dictionary: check the spelling")
+                continue
+            lemma, paradigms = hits[0]
+            shown = f"{word} → {lemma}"
+        lines += _paradigm_lines(shown, paradigms)
+    _flow.note("word_paradigm", words=list(found) + [
+        l for ls in lemmas.values() for l in ls if by_lemma.get(l)
+    ])
+    detail("словарь: %d слов, не найдено %d%s · из сети %d, из кеша %d",
+           len(found), len(missing), _listing(": ", missing),
+           dictionary.fetched, dictionary.cached)
+    return "\n".join(lines)
+
+
+def _paradigm_lines(shown: str, paradigms: list[ekilex.Paradigm]) -> list[str]:
+    if ekilex.is_invariant(paradigms):
+        return [f"{shown} — invariant: send 1 form"]
+    classes = {p.word_class for p in paradigms}
+    kinds = ([False] if classes - {"verb"} else []) + ([True] if "verb" in classes else [])
+    out = []
+    for verb in kinds:
+        forms = ekilex.canonical(paradigms, verb)
+        if not verb and not forms[3]:
+            text = " / ".join(" ~ ".join(v) for v in forms[:3])
+            tail = " — no partitive plural: send 3 forms"
+        else:
+            text = " / ".join(" ~ ".join(v) or "—" for v in forms)
+            tail = ""
+        out.append(f"{shown} — {'verb' if verb else 'noun/adj'}: {text}{tail}")
+    word = shown.split(" → ")[-1]
+    plural = [p.slot("PlN") for p in paradigms]
+    if any(word in forms for forms in plural) and not any(word in p.slot("SgN") for p in paradigms):
+        # püksid: на карточке законно пишут формами мн. ч.
+        shown_plural = " / ".join(
+            " ~ ".join(paradigms[0].slot(code)) or "—" for code in ("PlN", "PlG", "PlP")
+        )
+        out.append(f"  used in the plural: {shown_plural} — also accepted on the card")
+    return out
 
 
 @mcp.tool(
@@ -647,11 +884,8 @@ def deck_find(pattern: str) -> str:
     needle = pattern.strip().lower()
     if not needle:
         return "empty pattern"
-    con = open_snapshot()
-    try:
+    with snapshot() as con:
         hits = sorted(n for n in deck_names(con).values() if needle in n.lower())
-    finally:
-        con.close()
     detail("'%s': колод %d%s", pattern, len(hits), _listing(" · ", hits, cap=3))
     if not hits:
         return f"no deck matches '{pattern}'"
@@ -704,7 +938,7 @@ def anki_call(tool: str, args: dict | None = None) -> str:
     # Запись мимо topic_write — ровно тот случай, когда потом ничего не
     # сходится: доза не посчитана, формы не проверены, а заметки в колоде
     # уже лежат. В логе это должно быть видно сразу.
-    if mutating(tool):
+    if mutating(tool, args):
         detail("⚠ запись через аддон мимо topic_write: %s", _write_digest(tool, args))
     out = invoke(tools, tool, args)
     head = next((line for line in out.splitlines() if line.strip()), "пусто")
@@ -714,8 +948,11 @@ def anki_call(tool: str, args: dict | None = None) -> str:
 
 def _write_digest(tool: str, args: dict | None) -> str:
     args = args or {}
+    # Многоцелевые инструменты прячут действие и id внутри params.
+    if isinstance(args.get("params"), dict):
+        args = {**args, **args["params"]}
     parts = [tool]
-    for key in ("deck", "deck_name", "deckName", "note_type", "query"):
+    for key in ("action", "deck", "deck_name", "deckName", "note_type", "query", "tags"):
         if value := args.get(key):
             parts.append(f"{key}={_short(value, 60)}")
     for key in ("notes", "note_ids", "notes_ids", "cards", "card_ids"):
@@ -744,17 +981,36 @@ def _code_version() -> str:
             sha = next(
                 line.split()[0] for line in packed if line.endswith(" " + ref)
             )
-        return f"{ref.rsplit('/', 1)[-1]}@{sha[:7]}"
+        return f"{ref.rsplit('/', 1)[-1]}@{sha[:7]}{_dirty()}"
     except (OSError, StopIteration):
         return "?"
 
 
+def _dirty() -> str:
+    """'+dirty', если запущенный код расходится с коммитом.
+
+    Без этого 20.09 лог подписал main@486f558 процесс, который принимал
+    три формы у vesi — а этот коммит их отклонял: работали правки, ещё
+    не попавшие в историю. Git недоступен — честно ставим '+?'.
+    """
+    try:
+        out = subprocess.run(
+            ["git", "-C", str(PROJECT_ROOT), "status", "--porcelain", "--", "src"],
+            capture_output=True, text=True, timeout=3, check=True,
+        ).stdout
+    except (OSError, subprocess.SubprocessError):
+        return "+?"
+    return "+dirty" if out.strip() else ""
+
+
 def main() -> None:
     log.info(
-        "anki-vocab запущен · код %s · лог %s%s · коллекция %s · индекс %s · аддон %s",
+        "anki-vocab запущен · код %s · лог %s%s · журнал %s · коллекция %s · индекс %s"
+        " · аддон %s · ключ Ekilex %s",
         _code_version(), logging.getLevelName(log.level),
         f" + файл {LOG_FILE}" if LOG_FILE else " (только stderr)",
-        COLLECTION, INDEX, endpoint(),
+        journal.PATH or "выключен",
+        COLLECTION, INDEX, endpoint(), "есть" if ekilex.api_key() else "НЕТ",
     )
     mcp.run(transport="stdio")
 

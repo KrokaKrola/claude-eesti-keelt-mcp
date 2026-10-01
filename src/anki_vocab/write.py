@@ -24,7 +24,7 @@ import urllib.error
 import urllib.request
 from typing import Any, Callable
 
-from .config import ADDON_META, NEW_EVERY, NEW_MAX, POS_TAGS
+from .config import ADDON_META, DOSE_WINDOW_HOURS, NEW_EVERY, NEW_MAX, POS_TAGS
 from .query import format_repeats
 
 SUBDECKS = ("01. sõnad", "02. sõnad typein", "03. lause typein")
@@ -81,7 +81,11 @@ class Dose:
     # не «модель ничего не положила».
     counted: bool = False
     words: int = 0
-    expected: int = 0
+    # Ожидание на всё заполнение темы, включая прошлые вызовы окна.
+    expected_total: int = 0
+    # Что ушло в тему раньше за окно DOSE_WINDOW_HOURS.
+    prior_words: int = 0
+    prior_new: list[str] = dataclasses.field(default_factory=list)
     new: list[str] = dataclasses.field(default_factory=list)
     half: list[str] = dataclasses.field(default_factory=list)
     # Предложения с двумя новыми словами разом: два неизвестных в фразе,
@@ -90,13 +94,30 @@ class Dose:
     crowded: list[str] = dataclasses.field(default_factory=list)
 
     @property
+    def expected(self) -> int:
+        """Сколько ещё ждём от этого вызова."""
+        return max(0, self.expected_total - len(self.prior_new))
+
+    @property
     def short(self) -> bool:
         return len(self.new) < self.expected
 
+    @property
+    def over(self) -> bool:
+        return bool(self.new) and (
+            len(self.prior_new) + len(self.new) > self.expected_total
+        )
+
 
 def expected_dose(n_words: int) -> int:
-    """Сколько новых слов ждём от темы в n_words слов."""
-    return min(max(1, n_words // NEW_EVERY), NEW_MAX) if n_words else 0
+    """Сколько новых слов ждём от заполнения темы в n_words слов.
+
+    Без нижнего порога: прежний max(1, …) требовал новое слово от вызова
+    на одно слово — втрое чаще задуманного, и 01.10 из этого вышла
+    цепочка jogurt → keefir → kohupiim → pannkook → uba, где каждое
+    новое слово тянуло за собой следующее.
+    """
+    return min(n_words // NEW_EVERY, NEW_MAX)
 
 
 class AnkiError(RuntimeError):
@@ -245,6 +266,8 @@ def build_topic(
     words: list[dict],
     form_in_example: Callable[[str, str], bool] | None = None,
     novel_words: Callable[[str, set[str]], tuple[list[str], list[str]]] | None = None,
+    dose_history: tuple[int, list[str]] = (0, []),
+    form_check: Callable[[list[dict]], tuple[list[str], list[str]]] | None = None,
 ) -> tuple[list[Batch], list[str], Dose]:
     """Слова → три пачки заметок, предупреждения и отчёт о дозе.
 
@@ -272,13 +295,24 @@ def build_topic(
     if problems:
         raise NoteDataError(problems)
 
+    warnings: list[str] = []
+    if form_check is not None:
+        # Формы против словаря — до записи и с отказом: неверная форма на
+        # карточке заучивается, и исправлять её потом приходится в памяти.
+        wrong, unsure = form_check(clean)
+        if wrong:
+            raise NoteDataError(wrong)
+        warnings += unsure
+
     shared = [t for t in (level_tag(course),) if t] + topic_words(topic)
     root = f"{course}::{topic}"
-    warnings: list[str] = []
+    prior_words, prior_new = dose_history
     dose = Dose(
         counted=novel_words is not None,
         words=len(clean),
-        expected=expected_dose(len(clean)),
+        expected_total=expected_dose(prior_words + len(clean)),
+        prior_words=prior_words,
+        prior_new=list(prior_new),
     )
     # Слова самой темы новыми не считаются: их сейчас и учат. Лемму из
     # них делает вызывающий — здесь про морфологию ничего не знают.
@@ -506,6 +540,9 @@ def write_topic(
     form_in_example: Callable[[str, str], bool] | None = None,
     novel_words: Callable[[str, set[str]], tuple[list[str], list[str]]] | None = None,
     repeat_check: Callable[[list[str], set[str]], list] | None = None,
+    spell_check: Callable[[list[str], set[str]], list[tuple[str, str]]] | None = None,
+    form_check: Callable[[list[dict]], tuple[list[str], list[str]]] | None = None,
+    dose_history: tuple[int, list[str]] = (0, []),
     dry_run: bool = False,
 ) -> tuple[str, Dose]:
     """Полный проход: проверить, разложить, создать колоды, записать.
@@ -515,12 +552,13 @@ def write_topic(
     можно было бы только перечитывая ответы модели глазами.
     """
     batches, warnings, dose = build_topic(
-        course, topic, words, form_in_example, novel_words
+        course, topic, words, form_in_example, novel_words, dose_history, form_check
     )
     # Считаем и здесь, а не только в text_check: тот проверяет черновик,
     # и его могут не вызвать вовсе, — а сюда приходит ровно то, что
     # ляжет в колоду.
     repeats = repeat_check(*_sentences(batches)) if repeat_check else []
+    typos = spell_check(*_sentences(batches)) if spell_check else []
 
     head = f"{course}::{topic}"
     lines: list[str] = []
@@ -533,8 +571,8 @@ def write_topic(
         lines.append("  first note of 01: " + json.dumps(example, ensure_ascii=False))
         return (
             "\n".join(
-                lines + _dose_lines(dose) + _repeat_lines(repeats)
-                + _warning_lines(warnings)
+                lines + _typo_lines(typos) + _dose_lines(dose)
+                + _repeat_lines(repeats) + _warning_lines(warnings)
             ),
             dose,
         )
@@ -558,7 +596,7 @@ def write_topic(
 
     return (
         "\n".join(
-            [f"{head} — {total} notes"] + lines
+            [f"{head} — {total} notes"] + lines + _typo_lines(typos)
             + _dose_lines(dose) + _repeat_lines(repeats) + _warning_lines(warnings)
         ),
         dose,
@@ -586,6 +624,14 @@ def _sentences(batches: list[Batch]) -> tuple[list[str], set[str]]:
     return texts, taught
 
 
+def _typo_lines(typos: list[tuple[str, str]]) -> list[str]:
+    if not typos:
+        return []
+    return ["", "⚠ not in the dictionary — likely typos, fix before writing:"] + [
+        f"  {word} — '{text}'" for word, text in typos
+    ]
+
+
 def _repeat_lines(repeats: list) -> list[str]:
     if not repeats:
         return []
@@ -598,12 +644,24 @@ def _dose_lines(dose: Dose) -> list[str]:
     if not dose.counted:
         return []
     got = ", ".join(dose.new) if dose.new else "none"
-    mark = " ⚠ short" if dose.short else ""
+    mark = " ⚠ short" if dose.short else " ⚠ over" if dose.over else ""
     lines = [
         "",
         f"deck-03 new words: {len(dose.new)} of {dose.expected} expected"
         f"{mark} — {got}",
     ]
+    if dose.prior_words:
+        lines.append(
+            f"  this topic in the last {DOSE_WINDOW_HOURS}h: {dose.prior_words} "
+            f"words, new words already placed: "
+            + (", ".join(dose.prior_new) or "none")
+        )
+    if dose.over:
+        lines.append(
+            f"  the dose is one new word per {NEW_EVERY} words of the topic, "
+            f"{NEW_MAX} at most per filling — counted across calls, so "
+            "take the extra ones out of the deck-03 sentences"
+        )
     if dose.half:
         lines.append(
             "  half-known (met only inside examples, do not count): "

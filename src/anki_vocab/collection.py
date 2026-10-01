@@ -10,10 +10,13 @@ from __future__ import annotations
 
 import shutil
 import sqlite3
+import tempfile
 import time
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 
-from .config import COLLECTION, COLLECTION_PARTS, EXPECTED_SCHEMA_VER, SNAPSHOT
+from .config import COLLECTION, COLLECTION_PARTS, EXPECTED_SCHEMA_VER
 
 
 class CollectionError(RuntimeError):
@@ -72,7 +75,7 @@ def _verify(con: sqlite3.Connection) -> None:
 
 
 def open_snapshot(
-    path: Path = COLLECTION, dest: Path = SNAPSHOT, attempts: int = 3
+    dest: Path, path: Path = COLLECTION, attempts: int = 3
 ) -> sqlite3.Connection:
     """Копирует базу вместе с -wal/-shm и отдаёт соединение к копии.
 
@@ -97,6 +100,23 @@ def open_snapshot(
             if attempt < attempts - 1:
                 time.sleep(0.2)
     raise CollectionError(f"не удалось снять целую копию за {attempts} попытки: {last}")
+
+
+@contextmanager
+def snapshot(path: Path = COLLECTION) -> Iterator[sqlite3.Connection]:
+    """Своя копия на каждый вызов, удаляется сразу после.
+
+    Claude Desktop запускает сервер двумя процессами, и с общим файлом
+    копии один процесс удалял и перезаписывал её, пока другой читал:
+    .anki2 от одной копии рядом с -wal от другой SQLite молча не
+    доигрывает, и данные выходят устаревшими без всякой ошибки.
+    """
+    with tempfile.TemporaryDirectory(prefix="anki-vocab-") as tmp:
+        con = open_snapshot(Path(tmp) / "collection.anki2", path)
+        try:
+            yield con
+        finally:
+            con.close()
 
 
 def deck_names(con: sqlite3.Connection) -> dict[int, str]:

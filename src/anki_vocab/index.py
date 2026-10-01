@@ -88,6 +88,24 @@ create table if not exists debt_skip (
   added integer not null
 ) without rowid;
 
+-- Что уже записано в тему за текущее заполнение: доза новых слов
+-- считается по всем вызовам topic_write одной темы, а не по каждому.
+-- Как и debt_skip, из коллекции не восстанавливается и не сносится.
+create table if not exists dose_log (
+  topic text    not null,
+  at    integer not null,
+  words integer not null,
+  new   text    not null
+);
+
+-- Ответы словаря Ekilex: формы слова не меняются, сеть нужна один раз.
+-- Не из коллекции, поэтому пересборка индекса их не трогает.
+create table if not exists ekilex_cache (
+  word    text primary key,
+  data    text    not null,
+  fetched integer not null
+) without rowid;
+
 create virtual table if not exists entry_fts using fts5(ru, et_raw, note_id unindexed);
 """
 
@@ -208,6 +226,11 @@ def _store_note(
         key = parsed.headword.lower()
         for slot, text in parsed.slots:
             rows.add((text.lower(), key, note_id, slot))
+    elif parsed.is_phrase:
+        # Предложение разбираем целиком: тег части речи на нём относится
+        # к целевому слову, а не к каждому, и омонимию снимает контекст.
+        for slot, text in parsed.slots:
+            rows |= _sentence_rows(text, lem, note_id, slot)
     else:
         for slot, text in parsed.slots:
             for word in words(text):
@@ -216,8 +239,7 @@ def _store_note(
     # незнакомыми они не являются. В палитру не идут (слот 'example'),
     # но дают второй ярус и отметку «когда слово встречалось в последний раз».
     for et, _ru in parsed.examples:
-        for word in words(et):
-            rows.add((word.lower(), lem.lemma(word), note_id, "example"))
+        rows |= _sentence_rows(et, lem, note_id, "example")
     con.executemany(
         "insert or replace into form(form, lemma, note_id, slot) values (?,?,?,?)",
         rows,
@@ -227,6 +249,22 @@ def _store_note(
         "insert into entry_fts(ru, et_raw, note_id) values (?,?,?)",
         (parsed.ru, parsed.et_text, note_id),
     )
+
+
+def _sentence_rows(
+    text: str, lem: Lemmatizer, note_id: int, slot: str
+) -> set[tuple[str, str, int, str]]:
+    """Слова предложения с леммами, снятыми в контексте.
+
+    По одному слову 'jalga' в «pani kingad jalga» разбиралось наречием, и
+    в индексе заводилась лишняя лемма — она же потом всплывала в долге
+    словом без карточки.
+    """
+    tokens = words(text)
+    return {
+        (token.lower(), lemma, note_id, slot)
+        for token, (lemma, _code) in zip(tokens, lem.sentence(tokens))
+    }
 
 
 def rebuild_lemmas(con: sqlite3.Connection) -> int:
@@ -427,8 +465,7 @@ def scan_outside(
 def build(con: sqlite3.Connection, full: bool = False, quiet: bool = False) -> dict:
     started = time.time()
     lem = Lemmatizer(con)
-    snap = col.open_snapshot()
-    try:
+    with col.snapshot() as snap:
         decks = col.deck_names(snap)
         notetypes = col.notetype_names(snap)
         note_deck = col.note_decks(snap)
@@ -490,7 +527,7 @@ def build(con: sqlite3.Connection, full: bool = False, quiet: bool = False) -> d
                 continue
             _store_note(
                 con, lem, note_id, notetype, deck_of[note_id], mod, parsed,
-                stats.get(note_id, (0.0, 0)),
+                stats.get(note_id, (0.0, 0, 0)),
             )
             stored += 1
 
@@ -504,8 +541,6 @@ def build(con: sqlite3.Connection, full: bool = False, quiet: bool = False) -> d
         _meta_set(con, "collection", str(COLLECTION))
         _meta_set(con, "built_at", int(time.time()))
         con.commit()
-    finally:
-        snap.close()
 
     # Заметки, которых в индексе не было и которые созданы после
     # прошлой сборки: id заметки Anki — это время её создания в мс.

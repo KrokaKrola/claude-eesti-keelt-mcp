@@ -66,3 +66,42 @@ def test_proper_name_is_recognised_whatever_the_case(lem):
     assert lem.is_name("tallinn")
     assert not lem.is_name("koer"), "нарицательное с большой буквы — не имя"
     assert not lem.is_name("mari"), "у имени есть нарицательный разбор — оставляем"
+
+
+def test_frozen_case_adverb_still_reaches_the_noun(lem):
+    """'lukku' — наречие и иллатив от lukk разом. text_check 01.10 считал
+    его новым словом, хотя lukk был среди целевых."""
+    assert "lukk" in lem.lemmas("lukku")
+
+
+def test_dictionary_form_still_wins_over_foreign_variants(lem):
+    """Исключение для наречий не должно сломать правило 'koli'."""
+    assert "kolima" not in lem.lemmas("koli")
+
+
+@pytest.mark.parametrize(
+    "comparative,positive",
+    [("olulisem", "oluline"), ("magusam", "magus"), ("tervislikum", "tervislik"),
+     ("suurem", "suur"), ("pikem", "pikk"), ("soojem", "soe"), ("parem", "hea")],
+)
+def test_comparative_maps_to_its_adjective(lem, comparative, positive):
+    assert lem.lemma(comparative) == positive
+
+
+def test_typo_is_not_in_the_dictionary(lem):
+    """'söi' вместо 'sõi', 'mureled' вместо 'murelid' — обе ушли в Anki."""
+    assert not lem.in_dictionary("söi")
+    assert not lem.in_dictionary("mureled")
+    assert lem.in_dictionary("sõi")
+    assert lem.in_dictionary("kaerahelbepuder"), "сложное слово словарь собирает сам"
+
+
+def test_context_resolves_what_a_lone_word_cannot(lem):
+    tokens = "Ta pani kingad jalga".split()
+    assert lem.sentence(tokens)[-1][0] == "jalg"
+    assert lem.analyses("jalga")[0][0] == "jalga", "по одному — наречие"
+
+
+def test_context_keeps_proper_names(lem):
+    lemma, code = lem.sentence("Minu sõber on pärit Lätist".split())[-1]
+    assert code == "H"

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import html
 import re
+import unicodedata
 from dataclasses import dataclass, field
 
 from .config import LEVEL_TAGS, POS_TAGS, SERVICE_TAGS
@@ -14,7 +15,11 @@ _SOUND_RE = re.compile(r"\[sound:[^\]]*\]")
 _SPACE_RE = re.compile(r"[\s ]+")
 _CYRILLIC_RE = re.compile(r"[а-яёА-ЯЁ]")
 _CYRILLIC_RUN_RE = re.compile(r"[а-яёА-ЯЁ]+[\s:.,—-]*")
-_WORD_RE = re.compile(r"[A-Za-zÄÖÜÕŠŽäöüõšž]+(?:['’-][A-Za-zÄÖÜÕŠŽäöüõšž]+)*")
+# Слово — любые буквы, кроме кириллицы: по ней эстонская сторона
+# отделяется от русской. Узкий набор «только эстонский алфавит» молча
+# резал опечатку 'éesti' на 'e' и 'esti', и проверка её не узнавала.
+_LETTER = r"(?:(?![а-яёА-ЯЁ])[^\W\d_])"
+_WORD_RE = re.compile(rf"{_LETTER}+(?:['’-]{_LETTER}+)*")
 # Часть карточек Basic — это «слово + список его форм» с русскими подписями:
 #   koer  1-я форма (номинатив): koer  2-я форма (генитив): koera  ...
 # Ловим саму метку целиком. Проверять просто наличие слова «форма» нельзя:
@@ -41,7 +46,9 @@ def clean(raw: str) -> str:
 
 
 def words(text: str) -> list[str]:
-    return _WORD_RE.findall(text)
+    # Диакритика бывает и составной (e + U+0301) — без NFC буква
+    # распадается и слово режется надвое.
+    return _WORD_RE.findall(unicodedata.normalize("NFC", text))
 
 
 def has_cyrillic(text: str) -> bool:
@@ -135,7 +142,7 @@ def parse_note(notetype: str, flds: str, tags: str) -> ParsedNote | None:
     f = flds.split(FIELD_SEP)
     level, pos, topics = parse_tags(tags)
 
-    lexical = False
+    lexical = drill = False
 
     if notetype in ("Estonian 3 Forms", "Estonian Word Forms"):
         slots, examples = _three_forms(f, 4 if notetype == "Estonian 3 Forms" else 3)
@@ -177,7 +184,6 @@ def parse_note(notetype: str, flds: str, tags: str) -> ParsedNote | None:
         else:
             et_side, ru, slot = front, back, "Front"
 
-        ru = strip_cyrillic(ru) and ru or ru
         if not has_cyrillic(ru):
             drill = True
         segments = _FORM_LABEL_RE.split(et_side)
@@ -204,6 +210,6 @@ def parse_note(notetype: str, flds: str, tags: str) -> ParsedNote | None:
         return None
     return ParsedNote(
         ru=ru, slots=slots, examples=examples, level=level, pos=pos,
-        topics=topics, force_phrase=locals().get("drill", False),
+        topics=topics, force_phrase=drill,
         force_lexical=lexical,
     )

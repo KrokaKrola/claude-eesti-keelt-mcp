@@ -26,18 +26,36 @@ CACHE = DATA_DIR / "anki_tools.json"
 # честно короткий.
 MAX_RESULT = 12000
 
-# Инструменты аддона, которые меняют коллекцию. Перечислять их поимённо
-# нельзя: аддон добавляет новые, и список устаревал бы молча — а молчит
-# он ровно там, где запись прошла мимо topic_write.
-WRITE_PREFIXES = (
-    "add_", "answer_", "bury", "change_", "clear_", "create_", "delete_",
-    "forget", "gui_", "import_", "move_", "remove_", "reposition", "set_",
-    "suspend", "sync", "unbury", "unsuspend", "update_",
-)
+# Инструменты аддона, которые только читают. Список ведём именно их, а
+# не пишущих: аддон добавляет новые инструменты, и неизвестный должен
+# считаться записью — пусть лог лишний раз скажет «мимо topic_write»,
+# чем промолчит. Список пишущих по префиксам так и промолчал о 60
+# переносах карточек через card_management.
+READ_ONLY = {
+    "cards_stats", "find_notes", "get_card_memory_state", "get_due_cards",
+    "get_fsrs_params", "get_media_files_names", "list_decks",
+    "model_field_names", "model_names", "model_styling", "model_templates",
+    "notes_info", "present_card",
+    "gui_browse", "gui_current_card", "gui_deck_browser", "gui_select_card",
+    "gui_show_answer", "gui_show_question",
+}
+
+# Действия многоцелевых инструментов (card_management, tag_management,
+# filtered_deck, …), которые ничего не меняют.
+READ_ONLY_ACTIONS = {"get_tags", "get_info"}
 
 
-def mutating(tool: str) -> bool:
-    return tool.startswith(WRITE_PREFIXES)
+def mutating(tool: str, args: dict | None = None) -> bool:
+    if tool in READ_ONLY:
+        return False
+    args = args or {}
+    params = args.get("params")
+    if isinstance(params, dict) and params.get("action") in READ_ONLY_ACTIONS:
+        return False
+    # Оптимизатор FSRS без apply_results — пробный прогон.
+    if tool == "optimize_fsrs_params" and not args.get("apply_results"):
+        return False
+    return True
 
 
 # Схем больше нескольких сразу не отдаём: широкий шаблон вроде 'a' иначе

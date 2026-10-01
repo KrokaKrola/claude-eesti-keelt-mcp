@@ -13,24 +13,23 @@ _DEFAULT_COLLECTION = (
 )
 
 COLLECTION = Path(os.environ.get("ANKI_COLLECTION", _DEFAULT_COLLECTION))
-SNAPSHOT = DATA_DIR / "snapshot.anki2"
 INDEX = DATA_DIR / "vocab.sqlite"
 
 # Настройки аддона Anki MCP Server: оттуда берём адрес и порт, на
-# которых он слушает. Пользователь может поменять их мышкой.
-ADDON_META = (
-    Path.home() / "Library/Application Support/Anki2/addons21/124672614/meta.json"
-)
+# которых он слушает. Пользователь может поменять их мышкой. Папка Anki
+# своя на каждой ОС, поэтому путь выводим из коллекции:
+# <Anki2>/<профиль>/collection.anki2 → <Anki2>/addons21/.
+ADDON_META = COLLECTION.parent.parent / "addons21/124672614/meta.json"
 
 # Файлы SQLite, которые нужно копировать вместе: без -wal данные отстают.
 COLLECTION_PARTS = ("", "-wal", "-shm")
 
 EXPECTED_SCHEMA_VER = 18
-INDEX_VERSION = 7
+INDEX_VERSION = 8
 
 # Поднимать при любой правке логики разбора в lemma.py: иначе кэш молча
 # отдаёт разборы, посчитанные старым кодом.
-LEMMATIZER_VERSION = 2
+LEMMATIZER_VERSION = 3
 
 # Область видимости индекса. Сопоставление идёт по границе '::',
 # так что 'A1' не зацепит соседнюю ветку с похожим началом.
@@ -83,7 +82,7 @@ FUNCTION_WORDS = {
     "ma", "sa", "ta", "me", "te", "nad", "mina", "sina", "tema", "meie",
     "teie", "nemad", "see", "need", "too", "oma", "ise",
     "mis", "kes", "kus", "kuidas", "millal", "miks", "kas", "kumb",
-    "väga", "nii", "veel", "juba", "ainult", "ka", "ära", "palun",
+    "väga", "nii", "veel", "juba", "ainult", "ära", "palun",
     "on", "olen", "oled", "oleme", "olete", "pole", "ole",
     "üks", "kõik", "iga", "mõni", "palju", "vähe",
 }
@@ -93,7 +92,13 @@ FUNCTION_WORDS = {
 # Предложения, собранные только из известного, не учат ничему сверх
 # целевого слова — тема 11. Lähme välja не принесла ни одного нового.
 NEW_EVERY = 3   # одно новое слово примерно на каждое третье слово темы
-NEW_MAX = 5     # потолок на один вызов topic_write
+NEW_MAX = 5     # потолок на одно заполнение темы
+
+# Тему заполняют несколькими вызовами topic_write, и считать дозу на
+# вызов нельзя: пять вызовов по слову требовали пять новых слов, а тема,
+# разбитая на пять пачек, получала пять потолков. Поэтому вызовы одной
+# темы за это окно складываются в одно заполнение.
+DOSE_WINDOW_HOURS = 12
 
 # Сколько раз слово должно попасться в примерах, чтобы перестать считаться
 # полузнакомым. Ветка A1 из индекса исключена (EXCLUDED_DECK_PREFIXES), и

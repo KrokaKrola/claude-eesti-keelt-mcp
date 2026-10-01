@@ -51,3 +51,17 @@ def test_index_is_not_opened_until_a_tool_is_called():
     assert server._con is None, "открытие индекса на импорте ломает изоляцию"
     server.vocab_check(words=["x"])
     assert server._con is not None
+
+
+def test_phrasal_verb_form_is_found_in_its_example():
+    """'saan teada' стоит в примере дословно, а проверка 01.10 уверяла,
+    что формы там нет: фраза разбиралась как одно слово."""
+    from anki_vocab.query import Vocab
+    import sqlite3
+
+    con = sqlite3.connect(":memory:")
+    con.executescript(index.SCHEMA)
+    check = server._form_in_example(Vocab(con))
+    assert check("saan teada", "Ma saan teada homme.")
+    assert check("teada saama", "Ta tuli hinda teada saama.")
+    assert check("teada saada", "Ma tahan seda kiiresti teada.") is False

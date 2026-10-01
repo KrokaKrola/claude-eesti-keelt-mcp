@@ -97,6 +97,15 @@ def test_mutating_covers_the_write_tools(tools):
     for tool in ("add_notes", "update_note_fields", "delete_notes", "create_deck"):
         assert tool in names, f"аддон больше не отдаёт {tool}"
         assert pt.mutating(tool)
-    for tool in ("find_notes", "notes_info", "list_decks"):
+    for tool in ("find_notes", "notes_info", "list_decks", "gui_browse"):
         assert tool in names
         assert not pt.mutating(tool)
+
+
+def test_multi_action_tools_are_writes_unless_they_only_read():
+    """card_management двигал и переставлял карточки, а лог молчал:
+    по префиксу имени он на запись не походил."""
+    assert pt.mutating("card_management", {"params": {"action": "change_deck"}})
+    assert pt.mutating("tag_management", {"params": {"action": "replace_tags"}})
+    assert not pt.mutating("tag_management", {"params": {"action": "get_tags"}})
+    assert pt.mutating("some_future_tool"), "неизвестное считаем записью"

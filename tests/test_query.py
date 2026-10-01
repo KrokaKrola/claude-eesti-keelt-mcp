@@ -10,7 +10,9 @@ from anki_vocab.query import (
     UNKNOWN,
     Palette,
     Vocab,
+    format_check,
     format_text_check,
+    Check,
 )
 
 
@@ -162,13 +164,13 @@ def test_pool_ranks_by_usage_then_retention(vocab):
 
 
 def test_function_words_are_not_counted(vocab):
-    pct, new, content = vocab.check_sentence("See on jõgi")
+    pct, new, content, _ = vocab.check_sentence("See on jõgi")
     assert "see" not in content and "on" not in content
     assert pct == 100 and new == []
 
 
 def test_coverage_reports_new_words(vocab):
-    pct, new, _ = vocab.check_sentence("Ma nägin lennukit")
+    pct, new, _, _ = vocab.check_sentence("Ma nägin lennukit")
     assert new and pct < 100
 
 
@@ -198,27 +200,27 @@ def test_novel_keeps_the_form_next_to_the_lemma(vocab):
 def test_one_new_word_is_always_allowed(vocab):
     """Жёсткий потолок ломал естественность фраз — одно новое слово ок
     независимо от покрытия."""
-    assert "low" not in format_text_check([(20, ["lennuk"], ["a", "b"])])
+    assert "low" not in format_text_check([Check(20, ["lennuk"], ["a", "b"], [])])
 
 
 def test_low_coverage_with_several_new_words_is_flagged(vocab):
-    assert "low" in format_text_check([(40, ["lennuk", "auto"], ["a", "b"])])
+    assert "low" in format_text_check([Check(40, ["lennuk", "auto"], ["a", "b"], [])])
 
 
 def test_good_coverage_passes_even_with_several_new(vocab):
-    assert "low" not in format_text_check([(85, ["lennuk", "auto"], ["a"])])
+    assert "low" not in format_text_check([Check(85, ["lennuk", "auto"], ["a"], [])])
 
 
 def test_new_words_are_reported_as_candidates(vocab):
-    out = format_text_check([(85, ["lennuk"], ["a"])])
+    out = format_text_check([Check(85, ["lennuk"], ["a"], [])])
     assert "candidates" in out and "lennuk" in out
 
 
 def test_target_word_does_not_spend_budget(vocab):
     """Целевое слово карточки новое по определению — бюджет ему не тратим."""
-    _, new, _ = vocab.check_sentence("Ma nägin lennukit")
+    _, new, _, _ = vocab.check_sentence("Ma nägin lennukit")
     assert "lennuk" in new
-    pct, new2, _ = vocab.check_sentence("Ma nägin lennukit", targets={"lennuk"})
+    pct, new2, _, _ = vocab.check_sentence("Ma nägin lennukit", targets={"lennuk"})
     assert "lennuk" not in new2, "целевое слово не должно попадать в новые"
     assert len(new2) == len(new) - 1
 
@@ -421,7 +423,7 @@ def test_log_and_report_share_one_verdict(vocab):
     from anki_vocab.query import sentence_ok
 
     for pct, new in ((100, []), (20, ["a"]), (40, ["a", "b"]), (85, ["a", "b"])):
-        in_report = "low" not in format_text_check([(pct, new, ["x"])])
+        in_report = "low" not in format_text_check([Check(pct, new, ["x"], [])])
         assert in_report is sentence_ok(pct, new)
 
 
@@ -513,7 +515,7 @@ def test_repeat_spares_the_words_the_topic_teaches(vocab):
 def test_repeat_line_appears_in_the_report(vocab):
     from anki_vocab.query import Repeat
 
-    out = format_text_check([(100, [], ["panema"])], 70,
+    out = format_text_check([Check(100, [], ["panema"], [])], 70,
                             [Repeat("panema", 3, 20, crowded=True)], with_topic=True)
     assert "leaning too hard on: panema ×3 (+20 already in the topic)" in out
 
@@ -523,7 +525,7 @@ def test_batch_and_topic_signals_get_separate_lines(vocab):
     from anki_vocab.query import Repeat
 
     out = format_text_check(
-        [(100, [], ["panema"])], 70,
+        [Check(100, [], ["panema"], [])], 70,
         [Repeat("panema", 3, 20, crowded=True), Repeat("uus", 1, 76)],
         with_topic=True,
     )
@@ -533,4 +535,65 @@ def test_batch_and_topic_signals_get_separate_lines(vocab):
 
 
 def test_report_stays_quiet_without_repeats(vocab):
-    assert "leaning" not in format_text_check([(100, [], ["panema"])])
+    assert "leaning" not in format_text_check([Check(100, [], ["panema"], [])])
+
+
+def test_topic_is_matched_by_deck_level_not_substring():
+    from anki_vocab.query import topic_decks
+
+    con = sqlite3.connect(":memory:")
+    con.executescript(SCHEMA)
+    decks = ["k::A2::12. Poes::01. sõnad", "k::A2::14. Riidepoes::01. sõnad",
+             "k::A2::16. Toidupoes::03. lause typein"]
+    con.executemany(
+        "insert into entry (note_id,notetype,deck,topics,headword,et_raw,examples,"
+        "is_phrase,mod) values (?,'x',?,'[]','x','x','[]',0,0)",
+        list(enumerate(decks)),
+    )
+    assert topic_decks(con, "Poes") == [decks[0]]
+    assert topic_decks(con, "12. Poes") == [decks[0]]
+    assert topic_decks(con, "2. Poes") == []
+    assert topic_decks(con, "16. toidupoes") == [decks[2]]
+
+
+def test_targets_match_by_lemma(vocab):
+    """'kaerahelbed' в targets, 'kaerahelveste' в тексте — одно слово."""
+    goal = vocab.goal(["kaerahelbed"])
+    check = vocab.check_sentence("Kaerahelveste kilo", targets=goal)
+    assert "kaerahelves" not in check.new
+
+
+def test_typo_is_reported_apart_from_new_words(vocab):
+    check = vocab.check_sentence("Laps söi jõe ääres")
+    assert check.typos == ["söi"] and "söi" not in check.new
+    assert "typo?" in format_text_check([check])
+
+
+def test_proper_name_is_not_a_new_word(vocab):
+    new = vocab.check_sentence("Ta on pärit Lätist").new
+    assert not {"läti", "lätist"} & set(new)
+
+
+def test_typo_already_in_the_collection_is_still_a_typo(vocab):
+    """Попав в пример, опечатка становилась «знакомым» словом."""
+    vocab.con.execute(
+        "insert into lemma (lemma,topics,forms,n_notes,n_word_notes) "
+        "values ('söi','[]','[\"söi\"]',2,0)"
+    )
+    vocab.con.execute("insert into form values ('söi','söi',9,'example')")
+    assert vocab.check_sentence("Laps söi").typos == ["söi"]
+
+
+def test_sentence_only_word_comes_with_where_it_was_met(vocab):
+    """'~' показывают человеку на решение — с предложением, где он слово
+    видел, а не с тегами чужой карточки."""
+    vocab.con.execute(
+        "insert into entry (note_id,notetype,deck,topics,headword,et_raw,examples,"
+        "is_phrase,mod) values (50,'x','k::A2::09. Vaba aeg::01. sõnad','[]','x','x',?,0,0)",
+        ('[["Ma kalastan jõel.", ""]]',),
+    )
+    vocab.con.execute("insert into form values ('kalastan','kalastama',50,'example')")
+    vocab.con.execute("insert into debt_skip values ('kalastama', 0)")
+    out = format_check(vocab.check(["kalastama"]))
+    assert "~ seen 1×" in out and "«Ma kalastan jõel.»" in out
+    assert "marked it known" in out and "not a duplicate" in out

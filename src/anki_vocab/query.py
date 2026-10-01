@@ -9,11 +9,14 @@
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 import time
 from dataclasses import dataclass, field
+from typing import NamedTuple
 
 from .config import (
+    DOSE_WINDOW_HOURS,
     FUNCTION_WORDS,
     HALF_KNOWN_MAX,
     REPEAT_IN_TOPIC,
@@ -98,6 +101,26 @@ class Novel:
     half: list[tuple[str, str]] = field(default_factory=list)
 
 
+class Token(NamedTuple):
+    """Знаменательное слово предложения после разбора."""
+
+    form: str
+    status: str
+    lemma: str
+    times: int
+    # Нет в словаре Vabamorf: скорее опечатка, чем новое слово.
+    typo: bool = False
+
+
+class Check(NamedTuple):
+    """Вердикт по одному предложению."""
+
+    pct: int
+    new: list[str]        # незнакомые леммы, опечатки сюда не входят
+    content: list[str]    # все знаменательные леммы — для однообразия
+    typos: list[str]      # формы, которых нет в словаре
+
+
 @dataclass
 class Debt:
     """Слово, которое человек читает в своих же примерах, но карточки
@@ -134,6 +157,9 @@ class Hit:
     forms: tuple[str, ...] = ()
     decks: tuple[str, ...] = ()
     times: int = 0
+    # Только у '~': где человек слово видел и говорил ли он, что знает его.
+    example: str | None = None
+    marked_known: bool = False
 
 
 class Vocab:
@@ -187,8 +213,11 @@ class Vocab:
             for topic, rank in sorted(best.items(), key=lambda kv: kv[1])
         ]
 
-    def lookup(self, word: str) -> Hit:
-        """Точная форма → лемма формы → лемма по морфологии."""
+    def lookup(self, word: str, hint: str | None = None) -> Hit:
+        """Точная форма → лемма формы → лемма по морфологии.
+
+        hint — лемма, снятая в контексте предложения: она надёжнее разбора
+        слова по одному и идёт сразу после уже известных форм."""
         raw = word.strip().lower()
         if not raw:
             return Hit(query=word, status=UNKNOWN)
@@ -214,6 +243,8 @@ class Vocab:
                 (raw,),
             )
         ]
+        if hint:
+            candidates.append(hint)
         candidates.append(raw)
         candidates.extend(self.lem.lemmas(raw))
 
@@ -223,6 +254,22 @@ class Vocab:
                 hit.query = word
                 return hit
         return Hit(query=word, status=UNKNOWN)
+
+    def check(self, words: list[str]) -> list[Hit]:
+        """lookup для vocab_check, плюс контекст для слов с '~'.
+
+        '~' — не дубль: карточки у слова нет, оно только мелькало в чужих
+        примерах. Решает человек — знает он его или будет учить, — и
+        решает по тому, где его видел: голое слово ничего не напоминает.
+        """
+        hits = [self.lookup(w) for w in words]
+        for hit in hits:
+            if hit.status == SEEN and hit.lemma:
+                hit.example = self._sample(hit.lemma)
+                hit.marked_known = bool(self.con.execute(
+                    "select 1 from debt_skip where lemma = ?", (hit.lemma,)
+                ).fetchone())
+        return hits
 
     # --- палитра ---------------------------------------------------------
     def pool(
@@ -384,50 +431,75 @@ class Vocab:
         codes = {code for _, code in analyses if code}
         return bool(codes) and codes <= {"K", "J"}
 
-    def _scan(
-        self, text: str, targets: set[str]
-    ) -> list[tuple[str, str, str, int]]:
-        """Знаменательные слова предложения: (форма, статус, лемма, попаданий).
+    def goal(self, targets) -> set[str]:
+        """Целевые слова вместе с их леммами.
+
+        Модель передаёт слово так, как учит его: 'kaerahelbed', 'botased'.
+        В тексте оно стоит в другой форме, а сравнение идёт по лемме
+        (kaerahelves, botas), и без этого шага целевое слово выходило
+        новым и попадало в однообразие."""
+        out: set[str] = set()
+        for target in targets or ():
+            low = target.strip().lower()
+            if low:
+                out.add(low)
+                out |= self.lem.lemmas(low)
+        return out
+
+    def _scan(self, text: str, targets: set[str]) -> list[Token]:
+        """Знаменательные слова предложения.
 
         Форму держим рядом с леммой не для красоты: промахи морфологии
         видно только в паре. 'soojat' — партитив от soe, но Vabamorf
         отдаёт его самостоятельной леммой, и в отчёте это выглядит
         честным новым словом. С формой рядом сразу ясно, что случилось.
 
+        Имена собственные пропускаем: 'Lätist' не новое слово, а Латвия.
+        Видно это только по регистру, поэтому разбор — по исходному
+        тексту, до приведения к нижнему.
+
         targets — целевые слова карточек: они новые по определению
         и бюджет не тратят.
         """
-        out: list[tuple[str, str, str, int]] = []
-        for word in words(text):
+        out: list[Token] = []
+        tokens = words(text)
+        for word, (lemma, code) in zip(tokens, self.lem.sentence(tokens)):
             low = word.lower()
-            if self._is_function(low):
+            if code == "H" or self._is_function(low):
                 continue
-            if targets and ({low} | self.lem.lemmas(low)) & targets:
+            if targets and ({low, lemma} | self.lem.lemmas(low)) & targets:
                 continue
-            hit = self.lookup(low)
-            out.append((low, hit.status, hit.lemma or self.lem.lemma(low), hit.times))
+            hit = self.lookup(low, hint=lemma)
+            # Индекс опечатку не исправляет: 'söi' однажды попало в пример
+            # и стало «знакомым», и дальше проходило молча. Не трогаем
+            # только слово со своей карточкой — 'baleriinad' или 'wc-pott'
+            # словарь не знает, но человек учит их сознательно.
+            typo = hit.status != KNOWN and not self.lem.in_dictionary(low)
+            out.append(Token(low, hit.status, hit.lemma or lemma, hit.times, typo))
         return out
 
-    def check_sentence(
-        self, text: str, targets: set[str] | None = None
-    ) -> tuple[int, list[str], list[str]]:
-        """(процент покрытия, незнакомые леммы, знаменательные леммы).
+    def check_sentence(self, text: str, targets: set[str] | None = None) -> Check:
+        """Покрытие, незнакомые леммы, знаменательные леммы и опечатки.
 
-        Третьим значением идут именно леммы, а не формы из текста: по
+        Знаменательные идут именно леммами, а не формами из текста: по
         ним считается однообразие, и 'panin'/'pani'/'panime' должны
         сойтись в одно слово, иначе повтор не виден.
+
+        Опечатка в покрытие не идёт как знакомое слово, но и новым словом
+        её не называем: это ошибка в тексте, её исправляют, а не учат.
         """
         scan = self._scan(text, targets or set())
         if not scan:
-            return 100, [], []
+            return Check(100, [], [], [])
         unknown = list(dict.fromkeys(
-            lemma for _f, status, lemma, _n in scan if status == UNKNOWN
+            t.lemma for t in scan if t.status == UNKNOWN and not t.typo
         ))
-        covered = sum(status != UNKNOWN for _f, status, _l, _n in scan)
-        return (
+        covered = sum(t.status != UNKNOWN for t in scan)
+        return Check(
             round(100 * covered / len(scan)),
             unknown,
-            list(dict.fromkeys(lemma for _f, _s, lemma, _n in scan)),
+            list(dict.fromkeys(t.lemma for t in scan)),
+            list(dict.fromkeys(t.form for t in scan if t.typo)),
         )
 
     # --- однообразие ------------------------------------------------------
@@ -438,13 +510,16 @@ class Vocab:
         и ответы колоды 03 (is_phrase). Ответ колоды 02 — одна словоформа,
         не предложение, и в счёт не идёт.
         """
+        decks = topic_decks(self.con, topic)
+        if not decks:
+            return {}
         rows = self.con.execute(
             "select f.lemma, count(distinct f.note_id) from form f"
             " join entry e on e.note_id = f.note_id"
-            " where e.deck like ?"
+            f" where e.deck in ({','.join('?' * len(decks))})"
             "   and (f.slot = 'example' or (f.slot = 'Answer' and e.is_phrase = 1))"
             " group by f.lemma",
-            (f"%{topic.strip()}%",),
+            decks,
         )
         return dict(rows)
 
@@ -455,12 +530,16 @@ class Vocab:
         «12. Poes» обязан попадаться часто, и ругаться на него значит
         приучить модель не читать эту строку вовсе.
         """
+        decks = topic_decks(self.con, topic)
+        if not decks:
+            return set()
         return {
             lemma for (lemma,) in self.con.execute(
                 "select distinct f.lemma from form f"
                 " join entry e on e.note_id = f.note_id"
-                " where e.deck like ? and e.is_phrase = 0 and f.slot <> 'example'",
-                (f"%{topic.strip()}%",),
+                f" where e.deck in ({','.join('?' * len(decks))})"
+                "   and e.is_phrase = 0 and f.slot <> 'example'",
+                decks,
             )
         }
 
@@ -531,18 +610,56 @@ class Vocab:
         """
         unknown: dict[str, str] = {}
         half: dict[str, str] = {}
-        for form, status, lemma, times in self._scan(text, taught or set()):
-            if status == UNKNOWN:
-                unknown.setdefault(lemma, form)
-            elif status == SEEN and times <= HALF_KNOWN_MAX:
-                half.setdefault(lemma, form)
+        for t in self._scan(text, taught or set()):
+            # Опечатка дозой не считается: 'mureled' вместо 'murelid'
+            # засчитывалось новым словом темы.
+            if t.status == UNKNOWN and not t.typo:
+                unknown.setdefault(t.lemma, t.form)
+            elif t.status == SEEN and t.times <= HALF_KNOWN_MAX:
+                half.setdefault(t.lemma, t.form)
         return Novel(
             unknown=[(lemma, form) for lemma, form in unknown.items()],
             half=[(lemma, form) for lemma, form in half.items()],
         )
 
 
+    # --- доза по всему заполнению темы -----------------------------------
+    def dose_history(self, topic_key: str) -> tuple[int, list[str]]:
+        """Сколько слов и какие новые слова уже ушли в тему за окно."""
+        since = int(time.time() - DOSE_WINDOW_HOURS * 3600)
+        words_total, new = 0, []
+        for n, blob in self.con.execute(
+            "select words, new from dose_log where topic = ? and at >= ? order by at",
+            (topic_key, since),
+        ):
+            words_total += n
+            new += [w for w in json.loads(blob) if w not in new]
+        return words_total, new
+
+    def record_dose(self, topic_key: str, words_count: int, new: list[str]) -> None:
+        self.con.execute(
+            "insert into dose_log(topic, at, words, new) values (?, ?, ?, ?)",
+            (topic_key, int(time.time()), words_count, json.dumps(new, ensure_ascii=False)),
+        )
+        self.con.commit()
+
     # --- долг: слова без своей карточки -----------------------------------
+    def _frozen_case(self, lemma: str) -> bool:
+        """Наречие, застывшее из падежа слова, у которого карточка есть:
+        'lukku' при карточке lukk. Это не долг, а форма знакомого слова,
+        и контекст его не исправляет — Vabamorf и в предложении считает
+        'lukku' наречием."""
+        if not {code for _, code in self.lem.analyses(lemma)} <= {"D", "K"}:
+            return False
+        others = {lem for lem, _ in self.lem.variants(lemma)} - {lemma}
+        if not others:
+            return False
+        marks = ",".join("?" * len(others))
+        return bool(self.con.execute(
+            f"select 1 from lemma where lemma in ({marks}) and n_word_notes > 0",
+            tuple(others),
+        ).fetchone())
+
     def _sample(self, lemma: str, cap: int = 80) -> str | None:
         """Самое короткое предложение, где слово попадалось. Голое слово
         без контекста ничего не напоминает — а именно узнавание («а, вот
@@ -640,7 +757,11 @@ class Vocab:
                 break
             if len(lemma) < 2 or " " in lemma:
                 continue
-            if self._is_function(lemma) or self.lem.is_name(lemma):
+            if (
+                self._is_function(lemma)
+                or self.lem.is_name(lemma)
+                or self._frozen_case(lemma)
+            ):
                 continue
             picked.append((lemma, n_notes))
         page = picked[offset : offset + limit]
@@ -655,6 +776,31 @@ class Vocab:
 SUBDECKS = ("01. sõnad", "02. sõnad typein", "03. lause typein")
 
 
+_NUMBER_RE = re.compile(r"^\s*\d+[.)]?\s*")
+
+
+def topic_decks(con: sqlite3.Connection, topic: str) -> list[str]:
+    """Колоды темы — по имени уровня в пути, а не по подстроке.
+
+    Подстрока 'Poes' цепляла заодно 14. Riidepoes и 16. Toidupoes. Тема с
+    номером ('12. Poes') должна совпасть с уровнем пути целиком, без
+    номера ('Poes') — с уровнем, у которого отрезан номер.
+    """
+    want = topic.strip().lower()
+    if not want:
+        return []
+    numbered = bool(_NUMBER_RE.match(want))
+
+    def matches(part: str) -> bool:
+        part = part.strip().lower()
+        return part == want if numbered else _NUMBER_RE.sub("", part) == want
+
+    return [
+        deck for (deck,) in con.execute("select distinct deck from entry order by deck")
+        if any(matches(part) for part in deck.split("::"))
+    ]
+
+
 def topic_of(deck: str) -> str:
     """Из пути колоды достаём тему: подколода 01/02/03 сама по себе
     ('01. sõnad') ничего не говорит, решение принимается по теме."""
@@ -666,11 +812,12 @@ def topic_of(deck: str) -> str:
 
 def topic_state(con: sqlite3.Connection, topic: str) -> str:
     """Заменяет связку list_decks + find_notes одним вызовом."""
-    like = f"%{topic.strip()}%"
+    decks = topic_decks(con, topic)
+    marks = ",".join("?" * len(decks))
     rows = con.execute(
-        "select deck, count(*) from entry where deck like ? group by 1 order by 1",
-        (like,),
-    ).fetchall()
+        f"select deck, count(*) from entry where deck in ({marks}) group by 1 order by 1",
+        decks,
+    ).fetchall() if decks else []
     if not rows:
         return (
             f"topic '{topic}' is not in the index — either it does not exist "
@@ -693,9 +840,9 @@ def topic_state(con: sqlite3.Connection, topic: str) -> str:
         h for (h,) in con.execute(
             "select distinct f.lemma from form f"
             " join entry e on e.note_id = f.note_id"
-            " where e.deck like ? and e.is_phrase = 0 and f.slot <> 'example'"
+            f" where e.deck in ({marks}) and e.is_phrase = 0 and f.slot <> 'example'"
             " order by f.lemma",
-            (like,),
+            decks,
         )
     ]
     if heads:
@@ -717,6 +864,16 @@ def format_check(hits: list[Hit]) -> str:
         if h.status == UNKNOWN:
             lines.append(f"{h.query:<{width}} ✗")
             continue
+        if h.status == SEEN:
+            # Теги здесь чужие — той карточки, в пример которой слово
+            # попало, — поэтому вместо них число встреч и само предложение.
+            seen_in = f"  «{h.example}»" if h.example else ""
+            known = "  · learner marked it known" if h.marked_known else ""
+            lines.append(
+                f"{h.query:<{width}} ~ seen {h.times}×  "
+                f"{'/'.join(h.forms[:4])}{seen_in}{known}".rstrip()
+            )
+            continue
         tags = ",".join(h.topics[:3])
         meta = " ".join(x for x in (h.level, tags) if x)
         forms = "/".join(h.forms[:4])
@@ -733,6 +890,12 @@ def format_check(hits: list[Hit]) -> str:
     seen = sum(1 for h in hits if h.status == SEEN)
     missing = [h.query for h in hits if h.status == UNKNOWN]
     lines.append(f"— word card {known}, sentences only {seen}, missing {len(missing)}")
+    if seen:
+        lines.append(
+            "— '~' is not a duplicate: no card, only met inside other cards' "
+            "examples. Don't card it yet — show it to the learner and let "
+            "them decide"
+        )
     if missing:
         lines.append("missing: " + ", ".join(missing))
     return "\n".join(lines)
@@ -823,28 +986,36 @@ def format_repeats(repeats: list[Repeat], with_topic: bool) -> list[str]:
 
 
 def format_text_check(
-    results: list[tuple[int, list[str], list[str]]],
+    results: list[Check],
     min_coverage: int = 70,
     repeats: list[Repeat] | None = None,
     with_topic: bool = False,
 ) -> str:
     lines = []
     candidates: list[str] = []
+    typos: list[str] = []
     low = 0
-    for i, (pct, new, _content) in enumerate(results, 1):
-        for w in new:
+    for i, r in enumerate(results, 1):
+        for w in r.new:
             if w not in candidates:
                 candidates.append(w)
-        ok = sentence_ok(pct, new, min_coverage)
+        typos += [w for w in r.typos if w not in typos]
+        ok = sentence_ok(r.pct, r.new, min_coverage)
         low += not ok
-        shown = ", ".join(new) if new else "—"
-        lines.append(f"{i:<3}{pct:>4}%  {shown:<34} {'ok' if ok else 'low'}")
-    avg = round(sum(r[0] for r in results) / len(results)) if results else 100
+        shown = ", ".join(r.new + [f"{w}?" for w in r.typos]) or "—"
+        verdict = "typo?" if r.typos else ("ok" if ok else "low")
+        lines.append(f"{i:<3}{r.pct:>4}%  {shown:<34} {verdict}")
+    avg = round(sum(r.pct for r in results) / len(results)) if results else 100
     tail = f"average coverage {avg}%"
     if low:
         tail += f" · below {min_coverage}%: {low} of {len(results)}"
     if candidates:
         tail += "\nnew words (candidates for the next topic): " + ", ".join(candidates)
+    if typos:
+        tail += (
+            "\nnot in the dictionary — likely typos, fix the spelling "
+            "(a misspelt word teaches a wrong form): " + ", ".join(typos)
+        )
     lines.append(tail)
     lines.extend(format_repeats(repeats or [], with_topic))
     return "\n".join(lines)
