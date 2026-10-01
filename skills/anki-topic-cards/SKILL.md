@@ -9,7 +9,7 @@ Captures the exact workflow already validated on real topics (07. Aias, 08. Loom
 
 ## One MCP server
 
-Everything goes through `anki-vocab`: `vocab_check`, `vocab_pool`, `text_check`, `word_forms`, `topic_state`, `deck_find`, `vocab_debt` for reading, `topic_write` and `vocab_debt_skip` for writing.
+Everything goes through `anki-vocab`: `vocab_check`, `vocab_pool`, `text_check`, `word_forms`, `word_paradigm`, `topic_state`, `deck_find`, `vocab_debt` for reading, `topic_write` and `vocab_debt_skip` for writing.
 
 Reading works off a local index built from a copy of the collection, so it needs nothing running. Writing is passed on to the Anki add-on behind the scenes, so **`topic_write` needs Anki open** — if it isn't, the call comes back saying so and nothing is written.
 
@@ -57,7 +57,7 @@ Older topics in this collection carry the topic as a **single underscored tag** 
 | Verb | ma-infinitive — `1-я форма (ma-инфинитив)` | da-infinitive — `2-я форма (da-инфинитив)` | mina-vorm, 1st p. sg. present — `3-я форма (mina-vorm)` | **none** — verbs take 3 forms |
 | Invariant word — most adverbs (edasi, otsas, ringi…) and a handful of indeclinable pronouns/determiners (kogu, sama…) | same word repeated for Form1/2/3 in deck 01; **deck 02 gets a single note** with `Form` left empty | | | **none** |
 
-The 4th form is the **osastav mitmus** — `jõgi → jõgesid`, `raamat → raamatuid`, `suur → suuri`. Take the form Sõnaveeb gives; where the dictionary lists two variants, take the first one. Adjectives and declinable pronouns get it exactly like nouns. Verbs and invariant words do not: `Form4` goes into Anki empty and the card template simply hides it.
+The 4th form is the **osastav mitmus** — `jõgi → jõgesid`, `raamat → raamatuid`, `suur → suuri`. **Never derive forms yourself — take them from `anki-vocab:word_paradigm`**, which reads the EKI dictionary (Ekilex, the base behind Sõnaveeb); where it lists variants joined with `~`, take the first one. Guessed forms are how `kudub` (for `koob`) and the misspelt word `kesküte` reached the deck. Adjectives and declinable pronouns get it exactly like nouns. Verbs and invariant words do not: `Form4` goes into Anki empty and the card template simply hides it.
 
 ### Mass nouns: leave the 4th form out
 
@@ -72,13 +72,15 @@ So for those words **send three forms**, not four. The server accepts it:
 `Form4` goes into Anki empty, the template hides it, and deck 02 gets three
 notes for that word instead of four. `ex` stays at three pairs either way.
 
-The test is usage, not the dictionary: if you cannot picture an ordinary A2
-sentence using the partitive plural, leave it out. When the plural is perfectly
+Where `word_paradigm` says **`no partitive plural: send 3 forms`**, the
+dictionary itself has no plural (`keskküte`) — send three, and `topic_write`
+refuses a fourth. Where it does print a plural, the decision is yours, by usage:
+if you cannot picture an ordinary A2 sentence using the partitive plural, leave it out. When the plural is perfectly
 normal (`leib → leibu`, `muna → mune`, `kala → kalu`, `küpsis → küpsiseid`),
 give all four. A made-up 4th form is worse than a missing one; say in the
 report which words you left at three.
 
-If the word the user sends is an **inflected form** (e.g. they copied "Erinevaid", "Viskab", "Valas", "Suled", "Ühtegi" straight out of a text), first work out the dictionary lemma and its POS, then derive the canonical forms from that lemma (four if it declines, three if it is a verb) — don't just repeat the inflected form across the slots. Translate the **lemma** to Russian (its base meaning), not necessarily the narrower sense of the one inflected form the user happened to encounter. If a word arrives with no translation at all, work it out yourself and flag it in the final report rather than silently guessing forever without mentioning it.
+If the word the user sends is an **inflected form** (e.g. they copied "Erinevaid", "Viskab", "Valas", "Suled", "Ühtegi" straight out of a text), pass it to `word_paradigm` as is — it resolves the lemma (`erinevaid → erinev`) — and take the canonical forms of that lemma (four if it declines, three if it is a verb) — don't just repeat the inflected form across the slots. Translate the **lemma** to Russian (its base meaning), not necessarily the narrower sense of the one inflected form the user happened to encounter. If a word arrives with no translation at all, work it out yourself and flag it in the final report rather than silently guessing forever without mentioning it.
 
 ## Vocabulary grounding (mandatory)
 
@@ -227,7 +229,7 @@ If the user says to go ahead: compose from your own knowledge of the topic, skip
 `vocab_check` and `text_check` use three marks:
 
 - `✓` — the word is on a word card. Most of these are in the palette; a word whose only card is a `02. sõnad typein` form is not.
-- `~` — the word has only ever appeared inside an example sentence. Counts as known, never offered in the palette.
+- `~` — the word has only ever appeared inside an example sentence. Counts as known for coverage, never offered in the palette. **Not a duplicate** — it has no card; the line shows how often it was met and one sentence it was met in (`pakkuma ~ seen 3×  pakkus/pakub  «Ettekandja pakkus meile kohvi.»`), so the learner can tell whether they already know it.
 - `✗` — not in the collection at all.
 
 A `✓` line also shows, in square brackets, the topic(s) the word already lives in and **what kind of record sits there**:
@@ -278,7 +280,7 @@ what keeps it from becoming frustrating. Do not argue the point in the report.
 
 ```
 NEW_EVERY = 3     one new word in roughly every third deck-03 sentence
-NEW_MAX   = 5     never more than this many in one topic write
+NEW_MAX   = 5     never more than this many in one filling of a topic
 ```
 
 These two numbers live in `src/anki_vocab/config.py` — that is the only copy.
@@ -293,19 +295,25 @@ deck-03 new words: 1 of 4 expected ⚠ short — ümbrik
 receives a flat list of sentences and has no idea which of them are deck 03,
 so it can never tell you the dose was missed. `topic_write` sees the deck-03
 sentence as its own field, so it can. Run it with `dry_run=true` to read the
-line before anything is written, and fix a `⚠ short` then.
+line before anything is written, and fix a `⚠ short` or `⚠ over` then.
+
+The count spans **every `topic_write` call into the same topic within 12
+hours** — one sitting fills a topic, however many calls it takes. A call
+of one or two words into a fresh topic expects no new word at all; the
+third word brings the first. `⚠ over` means the topic already got its
+share: take the extra word out of the deck-03 sentence rather than
+writing it, and certainly don't turn it into the next card on your own.
 
 - **One new word per sentence, never two.** Two unknowns in a sentence the
   learner has to produce is exactly the friction being avoided. `topic_write`
   flags any sentence that breaks this.
 - Spread them across the topic rather than bunching them at the front.
-- A small topic (3–4 words) gets one, not `NEW_MAX`.
+- A small topic (3–5 words) gets one, 1–2 words get none.
 - The rest of the deck-03 sentences stay fully grounded, as before.
 - Words already being taught in this same call never count as new — the
   counter excludes them for you.
-- **`NEW_MAX` is per call, and the server cannot see across calls.** A topic
-  split into two `topic_write` calls would be allowed `NEW_MAX` twice — keep
-  the total for the whole topic under `NEW_MAX` yourself.
+- Splitting a topic across calls changes nothing: the server adds the calls
+  up (see above), and `NEW_MAX` holds for the whole filling.
 - If the topic genuinely has no suitable new word left — everything ordinary
   that fits is already known — leave it short and say so in the report in one
   line. A forced ornate word is worse than a missed dose.
@@ -357,7 +365,7 @@ for a proper card.
 - `pidama` takes the **ma**-infinitive (exception among modal-like verbs).
 - Genitive + noun for color/material/type compounds (`erineva värvi sokid`, `puu laud`…).
 - Postpositions (`jaoks, ääres, järel`…) govern genitive; `pärast`/`enne` used _before_ the noun (prepositionally) in a temporal sense take **partitive**, not genitive (`pärast tööd`, `enne lõunat`).
-- If a form or usage feels genuinely uncertain (rare compound, unusual gradation, an idiom you're not sure of), check it against Sõnaveeb/EKI with `web_search` before committing to it — don't silently guess on something you're not confident about.
+- Forms of the card's own word come from `word_paradigm`, not from memory. For any other form or usage you're unsure of (an inflected word inside an example, an idiom), check it in Sõnaveeb with `web_search` before committing to it — don't silently guess.
 
 ## A2 sentence-simplicity rule (mandatory — see memory item on this)
 
@@ -379,7 +387,11 @@ Simplicity and grounding pull the same way: short everyday clauses built from kn
 
 2. **Dedupe.** One `anki-vocab:vocab_check(words=[...])` call on the whole incoming list. It matches any inflected form, so `kübarat` finds `kübar`.
 
-   Words that come back `✓` or `~` are already in the collection. **Set them aside — do not create cards for them in this pass, and do not silently drop them either.** Keep the word, the topic(s) it already lives in, and its existing forms; they all go into the duplicate list in the final report (step 9).
+   Words come back in three groups, and each is handled differently:
+
+   - `✓` — already has a card. **Set it aside as a duplicate** — no card in this pass, but don't drop it silently either. Keep the word, the topic(s) it already lives in, and its existing forms; they go into the duplicate list in the final report (step 9).
+   - `~` — met inside other cards' examples, never carded. **Not a duplicate, and not yours to decide.** The learner may know it well by now or may want it taught — only they can tell. Hold it back from this write and keep its count and sentence from the `vocab_check` line; it goes into its own list in the report (step 9) as a question. A `~` line that ends with `learner marked it known` was already answered once — still list it, with that note.
+   - `✗` — new. These are the cards you write now.
 
    For words you do keep, `anki-vocab:word_forms(word=...)` returns the forms used on the existing card, so a re-add stays consistent instead of inventing a second variant.
 
@@ -397,7 +409,9 @@ Simplicity and grounding pull the same way: short everyday clauses built from kn
    before composing, not after**: retrofitting a new word into a finished
    sentence is what turns into "no new words this time".
 
-6. **Per word**: identify lemma + POS, derive the forms from the table above (four if it declines, three for a verb, one if it is invariant), and write the example sentences/translations per the grammar and A2-simplicity rules, **composing from the palette** — placing one dose word in every `NEW_EVERY`-th deck-03 sentence, and nothing new anywhere else on purpose.
+6. **Forms from the dictionary.** One `anki-vocab:word_paradigm(words=[every word you are carding])` call. Take the forms from it: four for a declinable word (three where it says `no partitive plural`, or where the plural is unused — see Mass nouns), three for a verb, one for `invariant`. A word it does not find (`not in the dictionary`) is either misspelt — check — or genuinely missing (a rare compound): then compose the forms yourself and name the word in the report.
+
+   **Per word**: with those forms, and write the example sentences/translations per the grammar and A2-simplicity rules, **composing from the palette** — placing one dose word in every `NEW_EVERY`-th deck-03 sentence, and nothing new anywhere else on purpose.
 
 7. **Validate.** One batched `anki-vocab:text_check(sentences=[all sentences you wrote], targets=[the words being taught], topic=<the topic>)`. Rewrite anything marked `low` and check again — but keep the deliberate dose words, they are the point. Two rounds maximum. Rewrite whatever shows up on `leaning too hard on` as well: that one is not about a single sentence but about the set reading as variations on one word. `already heavy in this topic` is a preference — follow it where the swap is free.
 
@@ -409,7 +423,7 @@ Simplicity and grounding pull the same way: short everyday clauses built from kn
 
    `course` defaults to `kursuse eesti keel::A2`; pass it only when the user names another root. Up to 25 words per call — split a longer list across calls (deck 02 now makes up to four notes per word, and the add-on caps a batch at 100).
 
-   Validation runs before anything is written: if an entry is malformed the call creates **no notes at all** and returns every complaint at once. Fix them all in one pass and call again. Duplicate filtering is not its job — step 2 already did that properly.
+   Validation runs before anything is written: if an entry is malformed the call creates **no notes at all** and returns every complaint at once. Fix them all in one pass and call again. Duplicate filtering is not its job — step 2 already did that properly. Part of that validation is the dictionary: every form is checked against EKI, and a form the dictionary does not have (`'kudun' — the dictionary has koon`) rejects the call with the right form in the reply. Take the dictionary's form; don't argue with it.
 
    If the call reports an error mid-write, some subdecks may already hold notes. Say so plainly in the report: **Ctrl+Z in Anki undoes the batch**.
 
@@ -421,10 +435,22 @@ Simplicity and grounding pull the same way: short everyday clauses built from kn
 9. **Report back in Russian**, concisely. The `anki-vocab` tools answer in English to save tokens — that is between you and them; what reaches the user is Russian, including the words you quote from `new words` and `low` lines.
    - how many notes went into each deck;
    - average coverage from `text_check`, and any sentence still marked `low` with the reason;
+   - a `not in the dictionary — likely typos` line (from `text_check` or `topic_write`) is never something to report and move on from: fix the spelling before writing — `söi` for `sõi` reached the deck exactly that way. If you believe the word is right (a loanword the dictionary lacks), check it in Sõnaveeb and say so;
    - anything still on `leaning too hard on` after the rewrites, and why it stayed (`already heavy in this topic` is a preference and does not belong in the report);
    - **новые слова в предложениях** — the words you put into the deck-03 sentences on purpose: word, translation, and the sentence each went into. Close the list by offering to make cards for any of them in decks 01/02 — that is the learner's call, not yours;
    - **кандидаты в следующую тему** — the rest of the `new words` line from the last `text_check`, i.e. whatever turned up beyond the deliberate dose. If it listed nothing, write «нет». Don't extend the list from your own sense of what's new, and don't drop anything from it;
-   - **дубли — отдельным списком, готовым к действию.** For every word set aside in step 2, give the word, its Russian meaning, the topic(s) it already lives in, and its existing forms:
+   - **встречались в примерах, карточки нет** — every `~` word held back in step 2, with the count and the sentence `vocab_check` gave, so the learner can judge at a glance:
+
+     ```
+     ### Встречались в примерах, карточки нет
+     | слово | значение | встречалось | где видел |
+     |---|---|---|---|
+     | pakkuma | предлагать | 3 раза | Ettekandja pakkus meile kohvi. |
+     | küpsetama | печь | 5 раз | Vanaema küpsetab pirukat. |
+     ```
+
+     Close it with one question: «Каким из них сделать карточки? Про те, что знаешь, скажи — больше не буду предлагать.» Words the learner wants → run the workflow for exactly those words into the same topic (the dose counter adds them to this filling on its own). Words they say they know → `anki-vocab:vocab_debt_skip(words=[...])`, so neither this list nor `vocab_debt` brings them back;
+   - **дубли — отдельным списком, готовым к действию.** For every `✓` word set aside in step 2, give the word, its Russian meaning, the topic(s) it already lives in, and its existing forms:
 
      ```
      ### Пропущено как дубли
@@ -437,7 +463,7 @@ Simplicity and grounding pull the same way: short everyday clauses built from kn
      Close the report by offering to add them anyway — one line, e.g. «Скажи, если всё равно нужно добавить — сделаю карточки и для них.» If the user asks for it, run the full workflow for exactly those words, skipping step 2's filter, and reuse the forms from `word_forms` so the new cards agree with the existing ones. Never add them on your own initiative: a word already in the target topic is usually a real duplicate, while the same word arriving from a different topic may be worth a second card — that is the user's call, not yours.
 
    - any translation you had to invent because the user didn't supply one;
-   - any form you weren't fully sure of and double-checked online.
+   - any word `word_paradigm` did not find, whose forms you therefore made up yourself; and say so if `topic_write` answered `forms NOT checked against the dictionary` (no key or no network).
 
 ## Worked example (for calibration only — write fresh sentences, don't reuse these verbatim)
 
