@@ -16,7 +16,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
 
-from .config import COLLECTION, COLLECTION_PARTS, EXPECTED_SCHEMA_VER
+from .config import COLLECTION, COLLECTION_HINT, COLLECTION_PARTS, EXPECTED_SCHEMA_VER
 
 
 class CollectionError(RuntimeError):
@@ -83,7 +83,7 @@ def open_snapshot(
     only the throwaway file suffers, so we just try again.
     """
     if not Path(path).exists():
-        raise CollectionError(f"collection not found: {path}")
+        raise CollectionError(f"collection not found: {path}" + (f" ({COLLECTION_HINT})" if COLLECTION_HINT else ""))
     dest.parent.mkdir(parents=True, exist_ok=True)
 
     last: Exception | None = None

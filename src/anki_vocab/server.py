@@ -27,7 +27,7 @@ from mcp.server.mcpserver import MCPServer
 from . import ekilex, journal
 from .flow import Flow, summary as flow_summary
 from .collection import deck_names, snapshot
-from .config import COLLECTION, DATA_DIR, INDEX, PROJECT_ROOT
+from .config import COLLECTION, COURSE, DATA_DIR, INDEX, PROJECT_ROOT
 from .index import ensure_fresh, open_index
 from .lemma import Lemmatizer
 from .parse import words as split_words
@@ -712,7 +712,7 @@ def _spell_check(vocab: Vocab):
 def topic_write(
     topic: str,
     words: list[dict],
-    course: str = "kursuse eesti keel::A2",
+    course: str = COURSE,
     dry_run: bool = False,
 ) -> str:
     with _lock:

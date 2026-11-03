@@ -1,0 +1,14 @@
+# Copy to anki-vocab.toml (kept out of git) and adjust. Every key is optional.
+
+# Path to collection.anki2. Leave it out to auto-detect, which works when you
+# have a single Anki profile. The ANKI_COLLECTION env var overrides it.
+# collection = "~/Library/Application Support/Anki2/User 1/collection.anki2"
+
+# Course root where topic_write puts topics: <course>::<NN. Topic>::01. sõnad, …
+# course = "kursuse eesti keel::A2"
+
+# Deck branches to index. Default: the top-level deck of `course`.
+# include_decks = ["kursuse eesti keel"]
+
+# Branches inside include_decks to leave out, e.g. decks in other card formats.
+# exclude_decks = ["kursuse eesti keel::A1"]

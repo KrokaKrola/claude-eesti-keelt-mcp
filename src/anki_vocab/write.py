@@ -402,15 +402,24 @@ def endpoint() -> str:
     changed in its config, and a hardcoded one would silently diverge."""
     if url := os.environ.get("ANKI_MCP_URL"):
         return url
-    host, port, path = "127.0.0.1", 3141, ""
-    try:
-        cfg = json.loads(ADDON_META.read_text()).get("config", {})
-        host = cfg.get("http_host") or host
-        port = cfg.get("http_port") or port
-        path = cfg.get("http_path") or ""
-    except (OSError, ValueError):
-        pass
+    cfg = _addon_settings()
+    host = cfg.get("http_host") or "127.0.0.1"
+    port = cfg.get("http_port") or 3141
+    path = cfg.get("http_path") or ""
     return f"http://{host}:{port}/{path.lstrip('/')}"
+
+
+def _addon_settings() -> dict:
+    try:
+        return json.loads(ADDON_META.read_text()).get("config", {})
+    except (OSError, ValueError):
+        return {}
+
+
+def _auth_headers() -> dict[str, str]:
+    """The add-on rejects every request without the key once one is set."""
+    key = os.environ.get("ANKI_MCP_API_KEY") or _addon_settings().get("http_api_key")
+    return {"Authorization": f"Bearer {key}"} if key else {}
 
 
 def _unwrap(body: str) -> dict:
@@ -434,6 +443,7 @@ def rpc(method: str, params: dict, timeout: float = 60.0) -> dict:
         headers={
             "Content-Type": "application/json",
             "Accept": "application/json, text/event-stream",
+            **_auth_headers(),
         },
     )
     try:

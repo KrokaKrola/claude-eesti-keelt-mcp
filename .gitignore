@@ -8,3 +8,6 @@ data/
 PLAN.md
 backup/
 skills/anki-topic-cards/OLD_SKILL.md
+
+# personal settings
+anki-vocab.toml

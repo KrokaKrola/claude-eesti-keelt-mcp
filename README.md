@@ -6,10 +6,9 @@ mostly from words you already know, flags words that are actually new, avoids
 duplicate cards, takes word forms from the EKI dictionary instead of guessing them,
 and writes finished topic cards straight into Anki.
 
-It started as a personal tool for a Russian speaker learning Estonian at A1–A2 level,
-so some conventions (note types, deck layout, Russian translations and tags) are
-specific to that setup. See [Assumptions](#assumptions) before using it on your own
-collection.
+It's built for Russian speakers learning Estonian at A1–A2 level: cards carry Russian
+translations, and the note types and deck layout ship with the repo. See
+[Assumptions](#assumptions).
 
 ## How it works
 
@@ -23,8 +22,9 @@ collection.
   in `data/vocab.sqlite`. Every tool call checks that the index is fresh (a `stat()`
   on three files) and refreshes it incrementally when the collection has changed.
 - **Writing goes through Anki.** Cards are created through the
-  [Anki MCP Server](https://ankiweb.net/shared/info/124672614) add-on over HTTP on
+  [Anki MCP Server](https://github.com/ankimcp/anki-mcp-server-addon) add-on over HTTP on
   localhost, so Anki has to be running when you write. Reading works with Anki closed.
+  Only anki-vocab is connected to Claude; it talks to the add-on itself.
 - **Forms come from the dictionary.** `word_paradigm` fetches canonical forms from the
   [EKI dictionary](https://ekilex.ee) (Ekilex API, the database behind Sõnaveeb), and
   `topic_write` refuses to write if a card's forms disagree with it. Responses are
@@ -53,73 +53,65 @@ Tool responses are in English to save tokens. The server tells the model to answ
 the user in Russian. You can change that in the `instructions` in
 [`server.py`](src/anki_vocab/server.py).
 
-## Requirements
+## What you need
 
-- macOS (the default collection and add-on paths assume `~/Library/Application Support/Anki2`)
-- Python ≥ 3.12 and [uv](https://docs.astral.sh/uv/)
-- Anki with the Anki MCP Server add-on (only needed for writing)
-- A free [Ekilex](https://ekilex.ee) API key (optional, from your profile there) for dictionary form checks
+- [Anki](https://apps.ankiweb.net) 25.02+ with the **Anki MCP Server** add-on, which
+  is what actually writes to Anki: code `124672614`
+  ([AnkiWeb](https://ankiweb.net/shared/info/124672614) ·
+  [GitHub](https://github.com/ankimcp/anki-mcp-server-addon) · [ankimcp.ai](https://ankimcp.ai)).
+  Reading works without it; writing needs Anki open with the add-on enabled.
+- [uv](https://docs.astral.sh/uv/) (it brings Python 3.12)
+- Claude Desktop or Claude Code
+- Optional: a free [Ekilex](https://ekilex.ee) API key for dictionary form checks
 
-## Setup
+Tested on macOS. Linux and Windows profile paths are supported but untested.
+
+## Quick start
 
 ```sh
 git clone https://github.com/KrokaKrola/claude-eesti-keelt-mcp.git
 cd claude-eesti-keelt-mcp
 uv sync
-ANKI_COLLECTION="$HOME/Library/Application Support/Anki2/<profile>/collection.anki2" \
-  uv run python -m anki_vocab.index --rebuild
+uv run python -m anki_vocab.setup   # with Anki open
 ```
 
-### Claude Desktop
+The setup command finds your collection, builds the index, checks the add-on, offers
+to create the [two note types](docs/note-types.md), and prints the config to paste into
+Claude Desktop or Claude Code. Then install the
+[skill](skills/anki-topic-cards/SKILL.md).
 
-Add the server to `~/Library/Application Support/Claude/claude_desktop_config.json`.
-Use an absolute path to `uv`, because Desktop does not inherit your shell's `PATH`:
-
-```json
-{
-  "mcpServers": {
-    "anki-vocab": {
-      "command": "/absolute/path/to/uv",
-      "args": ["run", "--directory", "/absolute/path/to/claude-eesti-keelt-mcp",
-               "python", "-m", "anki_vocab.server"],
-      "env": {
-        "ANKI_COLLECTION": "/Users/<you>/Library/Application Support/Anki2/<profile>/collection.anki2"
-      }
-    }
-  }
-}
-```
-
-Quit Desktop completely (Cmd+Q) and start it again so it picks up the change.
-
-### Claude Code
-
-```sh
-claude mcp add anki-vocab -e ANKI_COLLECTION="..." -- \
-  uv run --directory /absolute/path/to/claude-eesti-keelt-mcp python -m anki_vocab.server
-```
-
-### Skill
-
-[`skills/anki-topic-cards/SKILL.md`](skills/anki-topic-cards/SKILL.md) is the workflow
-Claude follows to turn a word list into topic cards with these tools. Install it as a
-skill in Claude Desktop or Claude Code.
+**Step by step: [docs/setup.md](docs/setup.md).**
+What the cards look like: [docs/note-types.md](docs/note-types.md).
 
 ## Configuration
 
+Personal settings go in `anki-vocab.toml` (not tracked by git). Copy
+[`anki-vocab.example.toml`](anki-vocab.example.toml) to start:
+
+| Key | Default | Purpose |
+| --- | --- | --- |
+| `collection` | auto-detected when there's one Anki profile | Collection to index |
+| `course` | `kursuse eesti keel::A2` | Where `topic_write` puts topics |
+| `include_decks` | top-level deck of `course` | Deck branches that count as your vocabulary |
+| `exclude_decks` | none | Branches inside them to skip |
+
+Environment variables, mostly for the `env` block of the Claude config:
+
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `ANKI_COLLECTION` | `~/Library/Application Support/Anki2/Kekw/collection.anki2` | Collection to index |
+| `ANKI_COLLECTION` | from `anki-vocab.toml` | Overrides `collection` |
+| `ANKI_VOCAB_CONFIG` | `anki-vocab.toml` in the repo | Settings file location |
 | `EKILEX_API_KEY` | read from `data/ekilex_api_key` | Ekilex API key |
-| `ANKI_MCP_URL` | read from the add-on's `meta.json` | Add-on endpoint |
+| `ANKI_MCP_URL` / `ANKI_MCP_API_KEY` | read from the add-on's settings | Add-on endpoint and key |
 | `ANKI_VOCAB_LOG` | `INFO` | Log level (`DEBUG` adds full arguments and responses) |
 | `ANKI_VOCAB_LOG_FILE` | `data/server.log` | Log file; an empty value disables it |
-| `ANKI_VOCAB_JOURNAL` | `data/journal.jsonl` | Full JSON journal of every tool call; an empty value disables it |
+| `ANKI_VOCAB_JOURNAL` | `data/journal.jsonl` | JSON journal of every call; an empty value disables it |
 
-Deck scope, tag classification and tuning constants are in
-[`config.py`](src/anki_vocab/config.py).
+Tag classification and tuning constants are in [`config.py`](src/anki_vocab/config.py).
 
 ## Index CLI
+
+The server keeps the index fresh on its own; these are for manual use.
 
 ```sh
 uv run python -m anki_vocab.index --rebuild      # full rebuild
@@ -130,17 +122,13 @@ uv run python -m anki_vocab.index --prune-cache  # drop unused lemma cache entri
 
 ## Assumptions
 
-The parser and writer expect this setup:
+- Cards are Estonian with **Russian** translations and Russian part-of-speech tags;
+  the Estonian side is recognized by the absence of Cyrillic.
+- Topics use the three-subdeck layout described in [docs/note-types.md](docs/note-types.md).
+- Existing cards in `Basic`, `Basic (and reversed card)`, `Estonian Word Forms` and
+  `Audio card` are read as known vocabulary too.
 
-- Decks under `kursuse eesti keel::<level>::<NN. Topic>`, each with the subdecks
-  `01. sõnad`, `02. sõnad typein` and `03. lause typein` (see `INCLUDED_DECK_PREFIXES`
-  in `config.py`).
-- Note types `Estonian 3 Forms`, `Estonian Word Forms`, `Estonian Word Forms with TypeIn`,
-  `Basic`, `Basic (and reversed card)` and `Audio card`, laid out as described in
-  [`parse.py`](src/anki_vocab/parse.py).
-- Russian translations, and part-of-speech tags in Russian (`существительное`, `глагол`, …).
-
-If your collection is organized differently, start with `config.py` and `parse.py`.
+For another language pair, start with `parse.py` and the skill.
 
 ## Development
 

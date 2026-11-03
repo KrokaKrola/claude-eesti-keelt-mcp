@@ -22,7 +22,7 @@ Reading works off a local index built from a copy of the collection, so it needs
 └── 03. lause typein  (model: Estonian Word Forms with TypeIn)
 ```
 
-Default course path (unless the user gives another): `kursuse eesti keel::A2`. If the user only names a topic ("Vaba aeg", "09"), assume this default root and these three subdeck names verbatim.
+Default course path (unless the user gives another): `kursuse eesti keel::A2`, or whatever `course` is set to in the server's `anki-vocab.toml` — `topic_write` uses that when you omit `course`. If the user only names a topic ("Vaba aeg", "09"), assume this default root and these three subdeck names verbatim.
 
 ## What you supply per word
 
@@ -421,7 +421,7 @@ Simplicity and grounding pull the same way: short everyday clauses built from kn
    anki-vocab:topic_write(topic="09. Vaba aeg", words=[<one entry per word>])
    ```
 
-   `course` defaults to `kursuse eesti keel::A2`; pass it only when the user names another root. Up to 25 words per call — split a longer list across calls (deck 02 now makes up to four notes per word, and the add-on caps a batch at 100).
+   `course` defaults to the server's configured course (`kursuse eesti keel::A2` unless changed); pass it only when the user names another root. Up to 25 words per call — split a longer list across calls (deck 02 now makes up to four notes per word, and the add-on caps a batch at 100).
 
    Validation runs before anything is written: if an entry is malformed the call creates **no notes at all** and returns every complaint at once. Fix them all in one pass and call again. Duplicate filtering is not its job — step 2 already did that properly. Part of that validation is the dictionary: every form is checked against EKI, and a form the dictionary does not have (`'kudun' — the dictionary has koon`) rejects the call with the right form in the reply. Take the dictionary's form; don't argue with it.
 

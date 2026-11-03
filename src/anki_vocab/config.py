@@ -1,18 +1,65 @@
-"""Paths and tag classification."""
+"""Paths, local settings and tag classification."""
 from __future__ import annotations
 
 import os
+import sys
+import tomllib
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DATA_DIR = PROJECT_ROOT / "data"
 
-_DEFAULT_COLLECTION = (
-    Path.home()
-    / "Library/Application Support/Anki2/Kekw/collection.anki2"
-)
+# Personal settings live outside git; anki-vocab.example.toml documents them.
+SETTINGS_FILE = Path(os.environ.get("ANKI_VOCAB_CONFIG", PROJECT_ROOT / "anki-vocab.toml"))
 
-COLLECTION = Path(os.environ.get("ANKI_COLLECTION", _DEFAULT_COLLECTION))
+
+def _load_settings() -> dict:
+    try:
+        return tomllib.loads(SETTINGS_FILE.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return {}
+    except tomllib.TOMLDecodeError as exc:
+        raise SystemExit(f"{SETTINGS_FILE}: {exc}") from exc
+
+
+SETTINGS = _load_settings()
+
+
+def anki_base() -> Path:
+    """Anki's data folder, which holds one subfolder per profile."""
+    if sys.platform == "darwin":
+        return Path.home() / "Library/Application Support/Anki2"
+    if sys.platform == "win32":
+        return Path(os.environ.get("APPDATA", Path.home())) / "Anki2"
+    return Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local/share")) / "Anki2"
+
+
+def profile_collections() -> list[Path]:
+    base = anki_base()
+    return sorted(base.glob("*/collection.anki2")) if base.is_dir() else []
+
+
+def _resolve_collection() -> tuple[Path, str | None]:
+    """Collection path plus a hint when it couldn't be determined.
+
+    Env var → settings file → the only profile. With several profiles,
+    guessing would index the wrong one silently, so we ask instead."""
+    explicit = os.environ.get("ANKI_COLLECTION") or SETTINGS.get("collection")
+    if explicit:
+        return Path(explicit).expanduser(), None
+    found = profile_collections()
+    if len(found) == 1:
+        return found[0], None
+    where = anki_base()
+    if not found:
+        return where / "collection.anki2", f"no Anki profile found in {where}"
+    names = ", ".join(p.parent.name for p in found)
+    return found[0], (
+        f"several Anki profiles ({names}): set collection in {SETTINGS_FILE.name}"
+    )
+
+
+COLLECTION, COLLECTION_HINT = _resolve_collection()
 INDEX = DATA_DIR / "vocab.sqlite"
 
 # Anki MCP Server add-on settings: the host and port it listens on.
@@ -33,14 +80,11 @@ LEMMATIZER_VERSION = 3
 
 # Index scope. Matching is on the '::' boundary, so 'A1' won't catch
 # a sibling branch with a similar prefix.
-INCLUDED_DECK_PREFIXES = ("kursuse eesti keel",)
-
-# Temporary: these branches still use old formats and await conversion.
-EXCLUDED_DECK_PREFIXES = (
-    "en words",
-    "kursuse eesti keel::A1",
-    'kursuse eesti keel::A2::00. А1',
-)
+# Default course root for topic_write: topics live under <course>::<NN. Topic>.
+COURSE = SETTINGS.get("course", "kursuse eesti keel::A2")
+INCLUDED_DECK_PREFIXES = tuple(SETTINGS.get("include_decks", [COURSE.split("::")[0]]))
+# Branches inside the scope to leave out (e.g. decks in older card formats).
+EXCLUDED_DECK_PREFIXES = tuple(SETTINGS.get("exclude_decks", []))
 
 
 def deck_in_scope(deck: str) -> bool:

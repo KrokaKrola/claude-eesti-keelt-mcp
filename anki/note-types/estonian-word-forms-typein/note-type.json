@@ -1,0 +1,18 @@
+{
+  "name": "Estonian Word Forms with TypeIn",
+  "fields": [
+    "Russian",
+    "Form",
+    "Answer",
+    "Example_ET",
+    "Example_RU"
+  ],
+  "templates": [
+    {
+      "name": "Card 1",
+      "front": "card-1.front.html",
+      "back": "card-1.back.html"
+    }
+  ],
+  "css": "style.css"
+}

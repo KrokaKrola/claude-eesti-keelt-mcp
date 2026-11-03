@@ -1,0 +1,30 @@
+{
+  "name": "Estonian 3 Forms",
+  "fields": [
+    "Russian",
+    "Form1",
+    "Form2",
+    "Form3",
+    "Form4",
+    "Ex1",
+    "Ex1ru",
+    "Ex2",
+    "Ex2ru",
+    "Ex3",
+    "Ex3ru",
+    "Add Reverse"
+  ],
+  "templates": [
+    {
+      "name": "RU→ET",
+      "front": "ru-et.front.html",
+      "back": "ru-et.back.html"
+    },
+    {
+      "name": "ET→RU",
+      "front": "et-ru.front.html",
+      "back": "et-ru.back.html"
+    }
+  ],
+  "css": "style.css"
+}
