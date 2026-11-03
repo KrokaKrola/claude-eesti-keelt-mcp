@@ -1,8 +1,8 @@
-"""MCP-сервер: доступ к словарному запасу из Anki.
+"""MCP server: access to the vocabulary stored in Anki.
 
-Каждый вызов сначала проверяет свежесть индекса — stat() по трём файлам
-коллекции стоит доли миллисекунды, зато карточка, добавленная десять
-минут назад через аддон, уже видна.
+Every call first checks the index is fresh — stat() on the collection's
+three files costs a fraction of a millisecond, and a card added ten
+minutes ago via the add-on is already visible.
 """
 from __future__ import annotations
 
@@ -48,23 +48,23 @@ from .query import (
 from .passthrough import catalog, describe, invoke, mutating, names
 from .write import AnkiError, NoteDataError, endpoint, form_labels, write_topic
 
-# Пишем только своим логгером и не через root: иначе на уровне DEBUG
-# matplotlib, который тянет за собой estnltk, заливает лог своим шумом.
-# PID в каждой строке: Claude Desktop поднимает сервер двумя процессами,
-# оба пишут в один файл, и номера вызовов #N у них пересекаются.
+# Log only through our own logger, not root: otherwise at DEBUG level
+# matplotlib, pulled in by estnltk, floods the log with noise.
+# PID on every line: Claude Desktop starts the server as two processes,
+# both write to one file, and their #N call numbers overlap.
 _FORMAT = logging.Formatter(
     "%(asctime)s %(levelname)-5s [%(process)d] %(call)s%(message)s",
     datefmt="%Y-%m-%d %H:%M:%S",
     defaults={"call": ""},
 )
 
-# Номер вызова живёт в строках →, ← и во всём, что пишется между ними, —
-# включая досборку индекса из index.py: тот пишет в этот же логгер.
-# Без номера разбор двух вызовов подряд склеивается в одну кашу.
+# The call number lives in the →, ← lines and everything logged between
+# them — including index refresh from index.py, which uses the same logger.
+# Without it, two consecutive calls blend into one mess.
 _calls = itertools.count(1)
 _call_no = contextvars.ContextVar("anki_vocab_call", default=0)
-# Что инструмент хочет добавить в свою запись журнала сверх аргументов
-# и ответа (topic_write кладёт сюда сводку сценария).
+# What a tool wants to add to its journal entry beyond arguments and
+# response (topic_write puts the workflow summary here).
 _journal_extra: contextvars.ContextVar[dict | None] = contextvars.ContextVar(
     "anki_vocab_journal_extra", default=None
 )
@@ -87,11 +87,11 @@ log.propagate = False
 
 
 def _open_log_file() -> Path | None:
-    """Свой файл рядом с индексом вдобавок к stderr.
+    """A log file next to the index, in addition to stderr.
 
-    Клиент держит свою копию stderr пару дней и обрезает её при
-    перезапуске, а разбирать поток вызовов приходится и через неделю.
-    Пустой ANKI_VOCAB_LOG_FILE выключает файл совсем.
+    The client keeps its copy of stderr for a couple of days and truncates
+    it on restart, while the call stream sometimes needs reviewing a week
+    later. An empty ANKI_VOCAB_LOG_FILE disables the file entirely.
     """
     raw = os.environ.get("ANKI_VOCAB_LOG_FILE", str(DATA_DIR / "server.log"))
     if not raw:
@@ -103,7 +103,7 @@ def _open_log_file() -> Path | None:
             path, maxBytes=2_000_000, backupCount=5, encoding="utf-8"
         )
     except OSError as exc:
-        log.warning("файл лога недоступен (%s): %s", path, exc)
+        log.warning("log file unavailable (%s): %s", path, exc)
         return None
     handler.setFormatter(_FORMAT)
     log.addHandler(handler)
@@ -114,7 +114,7 @@ LOG_FILE = _open_log_file()
 
 
 def detail(msg: str, *args, level: int = logging.INFO) -> None:
-    """Строка-вердикт внутри текущего вызова."""
+    """A verdict line inside the current call."""
     log.log(level, "  " + msg, *args)
 
 
@@ -131,9 +131,9 @@ def _short(value: object, limit: int = 90) -> str:
     return text if len(text) <= limit else text[: limit - 1] + "…"
 
 
-# Потолок дампа аргументов в DEBUG. topic_write на 33 слова — это 17k
-# символов, и лог за сессию распухал бы сильнее, чем его потом читают.
-# 12k покрывают тему слов на двадцать целиком, а режется только предел.
+# Cap on the DEBUG argument dump. topic_write with 33 words is 17k chars,
+# and the session log would bloat more than anyone reads it. 12k covers a
+# ~20-word topic in full; only the excess is cut.
 ARGS_DUMP_MAX = 12000
 
 
@@ -143,19 +143,19 @@ def _dump(kwargs: dict) -> str:
         return text
     return (
         text[:ARGS_DUMP_MAX]
-        + f"\n… обрезано, всего {len(text)} симв. (ARGS_DUMP_MAX={ARGS_DUMP_MAX})"
+        + f"\n… truncated, {len(text)} chars total (ARGS_DUMP_MAX={ARGS_DUMP_MAX})"
     )
 
 
 def traced(fn):
-    """Пишет вызовы в stderr — Claude Desktop складывает его в
+    """Log calls to stderr — Claude Desktop collects it in
     ~/Library/Logs/Claude/mcp-server-anki-vocab.log. ANKI_VOCAB_LOG=DEBUG
-    добавляет полные аргументы и ответы инструментов."""
+    adds full tool arguments and responses."""
 
     @functools.wraps(fn)
     def wrapper(**kwargs):
-        # Номер снимаем в finally: без этого всё, что пишется между
-        # вызовами, приписывается предыдущему.
+        # The number is reset in finally: otherwise everything logged between
+        # calls is attributed to the previous one.
         token = _call_no.set(next(_calls))
         extra_token = _journal_extra.set({})
         try:
@@ -163,16 +163,16 @@ def traced(fn):
                 f"{k}={_short(v)}" for k, v in kwargs.items() if v is not None
             )
             log.info("→ %s(%s)", fn.__name__, args)
-            # Полные аргументы отдельной строкой. В INFO они обрезаны до 90
-            # символов, и по логу нельзя было понять, какие предложения
-            # проверялись: вердикт есть, текста к нему нет.
+            # Full arguments on a separate line. At INFO they're cut to 90
+            # chars, and the log couldn't tell which sentences were checked:
+            # the verdict is there, the text isn't.
             if kwargs and log.isEnabledFor(logging.DEBUG):
-                log.debug("  аргументы %s:\n%s", fn.__name__, _dump(kwargs))
+                log.debug("  arguments %s:\n%s", fn.__name__, _dump(kwargs))
             started = time.perf_counter()
             try:
                 out = fn(**kwargs)
             except Exception as exc:
-                log.exception("✗ %s упал", fn.__name__)
+                log.exception("✗ %s failed", fn.__name__)
                 journal.record(
                     fn.__name__, _call_no.get(), kwargs, None,
                     (time.perf_counter() - started) * 1000,
@@ -181,9 +181,9 @@ def traced(fn):
                 )
                 raise
             ms = (time.perf_counter() - started) * 1000
-            log.info("← %s: %d симв. ≈%d токенов, %.0f мс",
+            log.info("← %s: %d chars ≈%d tokens, %.0f ms",
                      fn.__name__, len(out), len(out) // 3, ms)
-            log.debug("  ответ %s:\n%s", fn.__name__, out)
+            log.debug("  response %s:\n%s", fn.__name__, out)
             journal.record(
                 fn.__name__, _call_no.get(), kwargs, out, ms,
                 extra=_journal_extra.get(),
@@ -207,8 +207,8 @@ mcp = MCPServer(
     ),
 )
 
-# Индекс открываем лениво: побочный эффект на импорте мешает тестам
-# и заставляет платить за подключение даже когда инструмент не вызвали.
+# The index is opened lazily: a side effect on import gets in the way of
+# tests and costs a connection even when no tool is called.
 _con: sqlite3.Connection | None = None
 _vocab: Vocab | None = None
 _lock = threading.Lock()
@@ -220,7 +220,7 @@ def _fresh() -> Vocab:
         _con = open_index(same_thread=False)
         _vocab = Vocab(_con)
         detail(
-            "индекс: %s заметок, %s лемм, палитра %s · %s",
+            "index: %s notes, %s lemmas, palette %s · %s",
             *[
                 _con.execute(q).fetchone()[0]
                 for q in (
@@ -233,7 +233,7 @@ def _fresh() -> Vocab:
             INDEX,
         )
     if ensure_fresh(_con):
-        _vocab.lem = Lemmatizer(_con)  # перечитать кэш лемм после досборки
+        _vocab.lem = Lemmatizer(_con)  # reload the lemma cache after refresh
     return _vocab
 
 
@@ -259,17 +259,17 @@ def vocab_check(words: list[str]) -> str:
             if h.lemma:
                 marks.setdefault(h.lemma, mark)
         _flow.note("vocab_check", marks=marks)
-        # Не только счёт, но и разбивка по словам: этим же вызовом
-        # набирают дозу новых слов для колоды 03 (✗) и отсеивают дубли
-        # (✓), и постфактум надо видеть, что куда попало.
+        # Not just counts but a per-word breakdown: the same call is used to
+        # pick new words for the deck-03 dose (✗) and to filter duplicates
+        # (✓), and afterwards you need to see what went where.
         counts = Counter(h.status for h in hits)
         picked = lambda status: [h.query for h in hits if h.status == status]
         detail(
-            "✓%d ~%d ✗%d из %d%s%s%s",
+            "✓%d ~%d ✗%d of %d%s%s%s",
             counts[KNOWN], counts[SEEN], counts[UNKNOWN], len(hits),
-            _listing(" · ✗ новые: ", picked(UNKNOWN)),
-            _listing(" · ~ только в примерах: ", picked(SEEN)),
-            _listing(" · ✓ уже есть: ", picked(KNOWN)),
+            _listing(" · ✗ new: ", picked(UNKNOWN)),
+            _listing(" · ~ only in examples: ", picked(SEEN)),
+            _listing(" · ✓ already there: ", picked(KNOWN)),
         )
         return format_check(hits)
 
@@ -317,19 +317,19 @@ def vocab_pool(
             stale_days=stale_days,
         )
         _flow.note("vocab_pool", topics=topics or [])
-        # Из чего вообще было позволено составлять предложения. Без этой
-        # строки однообразие в готовой теме не отличить от бедной палитры.
+        # What sentences were allowed to be built from at all. Without this
+        # line, monotony in a finished topic can't be told from a poor palette.
         detail(
-            "палитра: тема %d, ядро %d, забытых %d, залежавшихся %d ·"
+            "palette: topic %d, core %d, forgotten %d, stale %d ·"
             " level=%s topics=%s pos=%s",
             len(palette.topical), len(palette.core),
             len(palette.weak), len(palette.stale),
             level or "—", ",".join(topics or []) or "—", pos or "—",
         )
         if limit:
-            detail("⚠ передан limit=%d — скрыто слов: %d", limit, palette.dropped)
-        detail("забытые: %s", " · ".join(palette.weak) or "нет", level=logging.DEBUG)
-        detail("залежавшиеся: %s", " · ".join(palette.stale) or "нет",
+            detail("⚠ limit=%d passed — words hidden: %d", limit, palette.dropped)
+        detail("forgotten: %s", " · ".join(palette.weak) or "none", level=logging.DEBUG)
+        detail("stale: %s", " · ".join(palette.stale) or "none",
                level=logging.DEBUG)
         return format_pool(palette)
 
@@ -350,7 +350,7 @@ def vocab_debt(limit: int = 10, offset: int = 0) -> str:
     with _lock:
         vocab = _fresh()
         page = vocab.debt(limit=limit, offset=offset)
-        detail("долг: %d слов, offset %d%s",
+        detail("debt: %d words, offset %d%s",
                len(page.items), page.offset,
                _listing(" · ", (item.word for item in page.items)))
         return format_debt(page)
@@ -372,7 +372,7 @@ def vocab_debt_skip(words: list[str], undo: bool = False) -> str:
         vocab = _fresh()
         n, total = vocab.debt_skip(words, undo=undo)
         verb = "un-marked" if undo else "marked as known"
-        detail("%s: %d из %d, всего помечено %d%s",
+        detail("%s: %d of %d, %d marked in total%s",
                verb, n, len(words), total, _listing(" · ", words))
         return f"{verb}: {n} · {total} words marked in total"
 
@@ -419,9 +419,9 @@ def text_check(
         )
         out = format_text_check(results, min_coverage, repeats, known_topic)
         if topic and not known_topic:
-            # Опечатка в имени темы — и проверка однообразия против уже
-            # написанного молча считала ноль.
-            detail("⚠ темы '%s' нет в индексе — повторы считались только в пачке", topic)
+            # A typo in the topic name — and the monotony check against what's
+            # already written silently counted zero.
+            detail("⚠ topic '%s' not in index — repeats counted within the batch only", topic)
             out += (
                 f"\ntopic '{topic}' is not in the index — monotony was counted "
                 "within this batch only (a new topic, or check the spelling)"
@@ -432,13 +432,13 @@ def text_check(
 def _log_text_check(
     sentences, results, goal, vocab: Vocab, min_coverage: int, repeats, topic
 ) -> None:
-    """Сводка по вызову, каждое проваленное предложение и разбор слов.
+    """Call summary, every failed sentence and a word breakdown.
 
-    Процента мало: 'soojat' в отчёте выглядит нормальным новым словом, и
-    только пара «форма → лемма» показывает, что это партитив от soe, у
-    которого карточка есть. Единственный вердикт low за весь прошлый лог
-    оказался именно таким промахом морфологии, и по логу это было не
-    видно — пришлось перезапускать разбор руками.
+    The percentage isn't enough: 'soojat' looks like a normal new word in
+    the report, and only the "form → lemma" pair shows it's the partitive
+    of soe, which has a card. The only low verdict in the whole previous
+    log turned out to be exactly such a morphology miss, and the log didn't
+    show it — the analysis had to be rerun by hand.
     """
     failed = [
         i for i, r in enumerate(results, 1)
@@ -447,19 +447,19 @@ def _log_text_check(
     fresh = {w for r in results for w in r.new}
     typos = {w for r in results for w in r.typos}
     average = round(sum(r.pct for r in results) / len(results)) if results else 0
-    detail("%d предложений, средний охват %d%%, low %d, новых слов %d%s%s",
+    detail("%d sentences, mean coverage %d%%, low %d, new words %d%s%s",
            len(results), average, len(failed), len(fresh),
            _listing(": ", sorted(fresh)),
-           _listing(" · ⚠ опечатки?: ", sorted(typos)))
+           _listing(" · ⚠ typos?: ", sorted(typos)))
     _log_monotony(repeats)
-    # Что именно не передали, видно и по строке вызова, но там это
-    # отсутствие аргумента, а здесь — потерянная проверка.
+    # What was omitted shows in the call line too, but there it's a missing
+    # argument, while here it's a lost check.
     if not goal:
-        detail("⚠ targets не переданы: слова, которым учит тема, "
-               "посчитаны новыми и попали в однообразие")
+        detail("⚠ targets not passed: the words the topic teaches were "
+               "counted as new and ended up in the monotony check")
     if topic is None:
-        detail("⚠ topic не передан: повторы против уже написанного "
-               "в теме не считались")
+        detail("⚠ topic not passed: repeats against what the topic already "
+               "has were not counted")
 
     verbose = log.isEnabledFor(logging.DEBUG)
     for i, (text, (pct, new, _c, _t)) in enumerate(zip(sentences, results), 1):
@@ -468,19 +468,19 @@ def _log_text_check(
         novel = vocab.novel(text, goal)
         pairs = ", ".join(f"{form}→{lemma}" for lemma, form in novel.unknown)
         half = ", ".join(f"{form}→{lemma}" for lemma, form in novel.half)
-        detail("%s %2d %3d%%  новые: %s%s  | %s",
+        detail("%s %2d %3d%%  new: %s%s  | %s",
                "⚠ low" if i in failed else "     ", i, pct, pairs,
-               f"  полузнакомые: {half}" if half else "", text,
+               f"  half-known: {half}" if half else "", text,
                level=logging.INFO if i in failed else logging.DEBUG)
 
 
 def _log_monotony(repeats) -> None:
-    """Одна строка на оба места, где считают однообразие: text_check
-    смотрит черновик, topic_write — то, что реально ляжет в колоду."""
+    """One line for both places that check monotony: text_check looks at
+    the draft, topic_write at what actually goes into the deck."""
     if not repeats:
         return
-    detail("⚠ однообразие: %s", ", ".join(
-        f"{r.lemma}×{r.in_batch}" + (f" (+{r.in_topic} в теме)" if r.in_topic else "")
+    detail("⚠ monotony: %s", ", ".join(
+        f"{r.lemma}×{r.in_batch}" + (f" (+{r.in_topic} in topic)" if r.in_topic else "")
         for r in repeats
     ))
 
@@ -497,7 +497,7 @@ def word_forms(word: str) -> str:
         vocab = _fresh()
         hit = vocab.lookup(word)
         if hit.status == UNKNOWN:
-            detail("%s — нет в коллекции", word)
+            detail("%s — not in the collection", word)
             return f"{word}: not in the collection"
         rows = vocab.con.execute(
             "select e.examples from form f join entry e on e.note_id = f.note_id"
@@ -510,7 +510,7 @@ def word_forms(word: str) -> str:
         for et, ru in json.loads(blob):
             if (et, ru) not in examples:
                 examples.append((et, ru))
-    detail("%s → %s (%s) · формы %s · примеров %d",
+    detail("%s → %s (%s) · forms %s · examples %d",
            word, hit.lemma, hit.pos or "?", "/".join(hit.forms), len(examples))
     out = [f"{hit.lemma} — {hit.ru or '?'} ({hit.pos or '?'}, {hit.level or '?'})"]
     out.append("forms: " + "/".join(hit.forms))
@@ -540,20 +540,20 @@ def topic_state(topic: str) -> str:
         ).fetchall() if decks else []
         detail("%s: %s", topic, " · ".join(
             f"{deck.split('::')[-1]}={n}" for deck, n in rows
-        ) or "нет в индексе")
+        ) or "not in index")
         return _topic_state(_con, topic)
 
 
 def _form_in_example(vocab: Vocab):
-    """Проверка «пример содержит форму» по леммам, а не по буквам:
-    у глагола algama пример законно идёт с algab, и строковое сравнение
-    ругалось бы на каждой второй карточке."""
+    """The "example contains the form" check by lemma, not by letters:
+    the verb algama legitimately has an example with algab, and a string
+    comparison would complain on every other card."""
 
     def check(form: str, sentence: str) -> bool:
         if form.strip().lower() in sentence.lower():
             return True
-        # Фразовый глагол — несколько слов, и каждое должно найтись: раньше
-        # 'saan teada' разбиралось как одно слово и не находилось никогда.
+        # A phrasal verb is several words, and each must be found: previously
+        # 'saan teada' was parsed as one word and never matched.
         sentence_lemmas = [vocab.lem.lemmas(w) for w in split_words(sentence)]
         for part in split_words(form):
             target = vocab.lem.lemmas(part)
@@ -565,10 +565,10 @@ def _form_in_example(vocab: Vocab):
 
 
 def _novel_words(vocab: Vocab):
-    """Новые слова предложения колоды 03 — материал счётчика дозы.
+    """New words in deck-03 sentences — input for the dose counter.
 
-    Слова темы приходят из write.py словарными формами: там про
-    морфологию ничего не знают, поэтому в леммы их разворачиваем здесь.
+    Topic words come from write.py in dictionary form: it knows nothing
+    about morphology, so they're expanded into lemmas here.
     """
     goals: dict[frozenset, set[str]] = {}
 
@@ -587,18 +587,19 @@ def _novel_words(vocab: Vocab):
 
 
 def _repeat_check(vocab: Vocab, topic: str):
-    """Однообразие того, что реально уезжает в колоду.
+    """Monotony of what actually goes into the deck.
 
-    Тему передаём: без неё видно только текущий вызов, а panema набрался
-    в 12. Poes именно тем, что расходился по вызовам двойками и тройками.
+    The topic is passed: without it only the current call is visible, and
+    panema accumulated in 12. Poes precisely by spreading over calls in
+    twos and threes.
     """
     def find(sentences: list[str], taught: set[str]):
         goal = vocab.goal(taught)
         batch = [vocab.check_sentence(s, targets=goal).content for s in sentences]
         found = vocab.repeats(batch, topic=topic, targets=goal)
-        # Держим результат при себе: отчёт уходит модели, а в лог его
-        # надо положить отдельно — иначе постфактум видно только то,
-        # что модель решила написать в ответе.
+        # Keep the result: the report goes to the model, and the log needs
+        # it separately — otherwise afterwards you only see what the model
+        # chose to write in its reply.
         find.found = found
         return found
 
@@ -607,7 +608,7 @@ def _repeat_check(vocab: Vocab, topic: str):
 
 
 def _drafted_sentences(words: list) -> list[str]:
-    """Все предложения, которые вызов topic_write несёт в колоду."""
+    """All sentences a topic_write call carries into the deck."""
     out = []
     for w in words:
         if not isinstance(w, dict):
@@ -619,11 +620,12 @@ def _drafted_sentences(words: list) -> list[str]:
 
 
 def _dictionary_check(vocab: Vocab):
-    """Формы слов против словаря EKI — до записи, с отказом при расхождении.
+    """Word forms against the EKI dictionary — before writing, rejecting on mismatch.
 
-    Не зависит от того, звала ли модель word_paradigm: 'kudub' вместо
-    koob и 'kesküte' вместо keskküte прошли бы и сюда, проверяй их только
-    модель. Словарь недоступен — пишем, но говорим, что формы не проверены.
+    Doesn't depend on whether the model called word_paradigm: 'kudub' for
+    koob and 'kesküte' for keskküte would get through here too if only the
+    model checked them. Dictionary unavailable — write, but say the forms
+    weren't checked.
     """
     def check(words: list[dict]) -> tuple[list[str], list[str]]:
         lexical = [w for w in words if len({f.lower() for f in w["forms"]}) > 1]
@@ -653,11 +655,11 @@ def _dictionary_check(vocab: Vocab):
 
 
 def _spell_check(vocab: Vocab):
-    """Слова, которых нет в словаре, — по всему, что уезжает в колоду.
+    """Words not in the dictionary — across everything that goes into the deck.
 
-    'Laps söi' (вместо sõi) и 'mustad mureled' (вместо murelid) так и
-    записались: text_check показал их новыми словами, а опечатку от
-    нового слова по той строке не отличить.
+    'Laps söi' (for sõi) and 'mustad mureled' (for murelid) were written
+    as is: text_check showed them as new words, and that line can't tell
+    a typo from a new word.
     """
     def find(sentences: list[str], taught: set[str]) -> list[tuple[str, str]]:
         goal = vocab.goal(taught)
@@ -682,11 +684,11 @@ def _spell_check(vocab: Vocab):
         "words — a list of dicts: word (the Estonian word), pos "
         "('существительное'/'глагол'/'прилагательное'/'наречие'/"
         "'местоимение'/… — Russian, as tagged on the cards), ru (the Russian "
-        "translation), forms (4 for a declinable word — номинатив, генитив, "
-        "партитив, партитив мн. ч. — or just 3 of them when the partitive "
-        "plural is not used in practice (вещественное: vesi, jahu, mesi, "
+        "translation), forms (4 for a declinable word — nominative, genitive, "
+        "partitive, partitive plural — or just 3 of them when the partitive "
+        "plural is not used in practice (mass noun: vesi, jahu, mesi, "
         "sool, või): a made-up 4th form is worse than none; 3 for a verb — "
-        "ma-/da-инфинитив, mina-vorm; one form is enough for an invariant "
+        "ma-/da-infinitive, mina-vorm; one form is enough for an invariant "
         "word), ex (3 pairs "
         "['estonian example','russian'], example N shows form N; one pair is "
         "enough for an invariant word), sentence (pair ['new sentence', "
@@ -722,14 +724,14 @@ def topic_write(
         if dry_run:
             _flow.note("topic_write_dry", topic=topic)
         else:
-            # Сводка шагов — до записи: по ней потом видно, на чём модель
-            # срезала путь, даже если запись затем упала.
+            # Step summary before writing: it later shows where the model cut
+            # corners, even if the write then failed.
             steps = _flow.before_write(
                 topic,
                 [w.get("word", "") for w in words if isinstance(w, dict)],
                 _drafted_sentences(words),
             )
-            detail("сценарий: %s", flow_summary(steps))
+            detail("workflow: %s", flow_summary(steps))
             _journal_extra.get()["flow"] = steps
         try:
             report, dose = write_topic(
@@ -743,40 +745,39 @@ def topic_write(
                 dry_run=dry_run,
             )
         except NoteDataError as exc:
-            detail("⚠ ничего не записано, ошибок в данных %d: %s",
+            detail("⚠ nothing written, data errors %d: %s",
                    len(exc.problems), " · ".join(exc.problems))
             return "nothing written, fix the data:\n" + "\n".join(
                 f"  {p}" for p in exc.problems
             )
         except AnkiError as exc:
-            detail("⚠ ничего не записано: %s", exc)
+            detail("⚠ nothing written: %s", exc)
             return f"nothing written: {exc}"
-        # Отчёт целиком, а не только его цифры: он и есть запись о том,
-        # что уехало в колоду, и переживает чат только здесь.
+        # The full report, not just its numbers: it is the record of what
+        # went into the deck, and only here does it outlive the chat.
         detail("%s%s\n%s", topic, " · dry run" if dry_run else "",
                textwrap.indent(report, " " * 8))
-        # Дозу и однообразие дублируем отдельными строками поверх отчёта:
-        # их ищут грепом по всем сессиям сразу.
+        # Dose and monotony are duplicated as separate lines over the report:
+        # they're grepped across all sessions at once.
         detail(
-            "доза колоды 03: %d из %d ожидаемых%s%s — %s%s%s%s",
+            "deck-03 dose: %d of %d expected%s%s — %s%s%s%s",
             len(dose.new), dose.expected,
-            " ⚠ мало" if dose.short else "",
-            " ⚠ перебор" if dose.over else "",
-            ", ".join(dose.new) or "нет",
-            f" · ранее в заполнении темы: слов {dose.prior_words}, новых "
+            " ⚠ low" if dose.short else "",
+            " ⚠ too many" if dose.over else "",
+            ", ".join(dose.new) or "none",
+            f" · earlier in this topic fill: words {dose.prior_words}, new "
             f"{len(dose.prior_new)}" if dose.prior_words else "",
-            f" · полузнакомых {len(dose.half)}: {', '.join(dose.half)}"
-            if dose.half else "",
-            f" · ⚠ два новых слова разом в {len(dose.crowded)} предл."
+            f" · half-known {len(dose.half)}: {', '.join(dose.half)}"
+            f" · ⚠ two new words at once in {len(dose.crowded)} sent."
             if dose.crowded else "",
         )
         _log_monotony(seek_repeats.found)
         if seek_forms.unchecked:
-            detail("⚠ формы не сверены со словарём: %s", seek_forms.unchecked)
+            detail("⚠ forms not checked against the dictionary: %s", seek_forms.unchecked)
         else:
-            detail("формы сверены со словарём EKI: слов %d", seek_forms.checked)
+            detail("forms checked against the EKI dictionary: words %d", seek_forms.checked)
         if seek_typos.found:
-            detail("⚠ опечатки?: %s", ", ".join(w for w, _ in seek_typos.found))
+            detail("⚠ typos?: %s", ", ".join(w for w, _ in seek_typos.found))
         _journal_extra.get().update({
             "dose": {
                 "new": dose.new, "half": dose.half, "expected": dose.expected,
@@ -788,9 +789,9 @@ def topic_write(
         })
         if not dry_run:
             vocab.record_dose(dose_key, dose.words, dose.new)
-            # Свои заметки помечаем: иначе досборка отчитается о них как
-            # о появившихся мимо сервера.
-            ensure_fresh(_con, own_write=True)  # новые слова сразу видны vocab_check
+            # Mark our own notes: otherwise refresh reports them as
+            # appearing bypassing the server.
+            ensure_fresh(_con, own_write=True)  # new words visible to vocab_check at once
     return report
 
 
@@ -814,15 +815,15 @@ def word_paradigm(words: list[str]) -> str:
         dictionary = ekilex.Dictionary(vocab.con)
         try:
             found = dictionary.lookup_many(words)
-            # Слово в тексте бывает словоформой: словарь ищет только по
-            # заголовку, поэтому ненайденное пробуем ещё раз леммой.
+            # A word in text may be an inflected form: the dictionary searches
+            # by headword only, so misses are retried by lemma.
             lemmas = {
                 w: sorted(vocab.lem.lemmas(w) - {w})
                 for w, paradigms in found.items() if not paradigms
             }
             by_lemma = dictionary.lookup_many([l for ls in lemmas.values() for l in ls])
         except ekilex.EkilexError as exc:
-            detail("⚠ словарь недоступен: %s", exc)
+            detail("⚠ dictionary unavailable: %s", exc)
             return f"dictionary unavailable: {exc}"
     lines = []
     missing = []
@@ -840,7 +841,7 @@ def word_paradigm(words: list[str]) -> str:
     _flow.note("word_paradigm", words=list(found) + [
         l for ls in lemmas.values() for l in ls if by_lemma.get(l)
     ])
-    detail("словарь: %d слов, не найдено %d%s · из сети %d, из кеша %d",
+    detail("dictionary: %d words, not found %d%s · from network %d, from cache %d",
            len(found), len(missing), _listing(": ", missing),
            dictionary.fetched, dictionary.cached)
     return "\n".join(lines)
@@ -864,7 +865,7 @@ def _paradigm_lines(shown: str, paradigms: list[ekilex.Paradigm]) -> list[str]:
     word = shown.split(" → ")[-1]
     plural = [p.slot("PlN") for p in paradigms]
     if any(word in forms for forms in plural) and not any(word in p.slot("SgN") for p in paradigms):
-        # püksid: на карточке законно пишут формами мн. ч.
+        # püksid: legitimately written with plural forms on the card
         shown_plural = " / ".join(
             " ~ ".join(paradigms[0].slot(code)) or "—" for code in ("PlN", "PlG", "PlP")
         )
@@ -886,7 +887,7 @@ def deck_find(pattern: str) -> str:
         return "empty pattern"
     with snapshot() as con:
         hits = sorted(n for n in deck_names(con).values() if needle in n.lower())
-    detail("'%s': колод %d%s", pattern, len(hits), _listing(" · ", hits, cap=3))
+    detail("'%s': decks %d%s", pattern, len(hits), _listing(" · ", hits, cap=3))
     if not hits:
         return f"no deck matches '{pattern}'"
     return "\n".join(hits[:40]) + (f"\n… +{len(hits) - 40} more" if len(hits) > 40 else "")
@@ -910,9 +911,9 @@ def anki_tools(pattern: str = "") -> str:
     try:
         tools, source = catalog()
     except AnkiError as exc:
-        detail("⚠ каталог недоступен: %s", exc)
+        detail("⚠ catalogue unavailable: %s", exc)
         return f"{exc}"
-    detail("каталог [%s]: инструментов %d, шаблон '%s'",
+    detail("catalogue [%s]: tools %d, pattern '%s'",
            source, len(tools), pattern.strip() or "—")
     if not pattern.strip():
         return f"[{source}] {len(tools)} add-on tools:\n{names(tools)}\n" \
@@ -933,22 +934,22 @@ def anki_call(tool: str, args: dict | None = None) -> str:
     try:
         tools, _ = catalog()
     except AnkiError as exc:
-        detail("⚠ каталог недоступен: %s", exc)
+        detail("⚠ catalogue unavailable: %s", exc)
         return f"{exc}"
-    # Запись мимо topic_write — ровно тот случай, когда потом ничего не
-    # сходится: доза не посчитана, формы не проверены, а заметки в колоде
-    # уже лежат. В логе это должно быть видно сразу.
+    # A write bypassing topic_write is exactly the case where nothing adds up
+    # later: the dose isn't counted, forms aren't checked, and the notes are
+    # already in the deck. The log must show it right away.
     if mutating(tool, args):
-        detail("⚠ запись через аддон мимо topic_write: %s", _write_digest(tool, args))
+        detail("⚠ write via add-on bypassing topic_write: %s", _write_digest(tool, args))
     out = invoke(tools, tool, args)
-    head = next((line for line in out.splitlines() if line.strip()), "пусто")
+    head = next((line for line in out.splitlines() if line.strip()), "empty")
     detail("%s → %s", tool, _short(head, 160))
     return out
 
 
 def _write_digest(tool: str, args: dict | None) -> str:
     args = args or {}
-    # Многоцелевые инструменты прячут действие и id внутри params.
+    # Multi-purpose tools hide the action and ids inside params.
     if isinstance(args.get("params"), dict):
         args = {**args, **args["params"]}
     parts = [tool]
@@ -962,11 +963,11 @@ def _write_digest(tool: str, args: dict | None) -> str:
 
 
 def _code_version() -> str:
-    """Коммит, который реально запущен.
+    """The commit actually running.
 
-    По логу иначе не отличить, какая версия его писала: старая сборка
-    молчит ровно там, где новая пишет вердикт, и отсутствие строки
-    читается как «проверка не сработала».
+    Otherwise the log can't tell which version wrote it: an old build is
+    silent exactly where a new one logs a verdict, and a missing line reads
+    as "the check didn't fire".
     """
     git = PROJECT_ROOT / ".git"
     try:
@@ -987,11 +988,11 @@ def _code_version() -> str:
 
 
 def _dirty() -> str:
-    """'+dirty', если запущенный код расходится с коммитом.
+    """'+dirty' if the running code differs from the commit.
 
-    Без этого 20.09 лог подписал main@486f558 процесс, который принимал
-    три формы у vesi — а этот коммит их отклонял: работали правки, ещё
-    не попавшие в историю. Git недоступен — честно ставим '+?'.
+    Without it, on 20.09 the log labeled as main@486f558 a process that
+    accepted three forms for vesi — while that commit rejected them: edits
+    not yet in history were running. Git unavailable — honestly mark '+?'.
     """
     try:
         out = subprocess.run(
@@ -1005,12 +1006,12 @@ def _dirty() -> str:
 
 def main() -> None:
     log.info(
-        "anki-vocab запущен · код %s · лог %s%s · журнал %s · коллекция %s · индекс %s"
-        " · аддон %s · ключ Ekilex %s",
+        "anki-vocab started · code %s · log %s%s · journal %s · collection %s · index %s"
+        " · add-on %s · Ekilex key %s",
         _code_version(), logging.getLevelName(log.level),
-        f" + файл {LOG_FILE}" if LOG_FILE else " (только stderr)",
-        journal.PATH or "выключен",
-        COLLECTION, INDEX, endpoint(), "есть" if ekilex.api_key() else "НЕТ",
+        f" + file {LOG_FILE}" if LOG_FILE else " (stderr only)",
+        journal.PATH or "off",
+        COLLECTION, INDEX, endpoint(), "set" if ekilex.api_key() else "MISSING",
     )
     mcp.run(transport="stdio")
 

@@ -1,15 +1,16 @@
-"""Формы слова из словаря EKI через Ekilex API.
+"""Word forms from the EKI dictionary via the Ekilex API.
 
-Формы на карточке — то, что человек заучивает, и угаданная форма хуже
-отсутствующей: так в колоду попали 'kudub' вместо koob и целое слово
-'kesküte' вместо keskküte. Морфология Vabamorf тут не судья — она
-синтезирует форму по правилам, но не знает, какие из них словарь
-признаёт и есть ли у слова множественное число вообще.
+The forms on a card are what the learner memorizes, and a guessed form is
+worse than a missing one: that's how 'kudub' got into the deck instead of
+koob, and the whole word 'kesküte' instead of keskküte. Vabamorf's
+morphology is no judge here — it synthesizes forms by rule but doesn't
+know which ones the dictionary accepts, or whether the word has a plural
+at all.
 
-Ekilex — это база, из которой собран Sõnaveeb. Ключ бесплатный, из
-профиля на ekilex.ee: переменная EKILEX_API_KEY или файл
-data/ekilex_api_key. Ответы кешируются в индексе навсегда — формы слова
-не меняются, а сеть нужна только на первом запросе.
+Ekilex is the database Sõnaveeb is built from. The key is free, from your
+profile at ekilex.ee: the EKILEX_API_KEY variable or the file
+data/ekilex_api_key. Responses are cached in the index forever — a word's
+forms don't change, and the network is needed only for the first request.
 """
 from __future__ import annotations
 
@@ -29,19 +30,19 @@ API = "https://ekilex.ee/api"
 KEY_FILE = DATA_DIR / "ekilex_api_key"
 TIMEOUT = 15.0
 
-# «Нет в словаре» тоже кешируем, но не навсегда: словарь пополняется.
+# "Not in the dictionary" is cached too, but not forever: the dictionary grows.
 MISS_TTL_DAYS = 30
 
-# Канонические формы карточки в кодах Ekilex.
+# The card's canonical forms as Ekilex codes.
 NOUN_CODES = ("SgN", "SgG", "SgP", "PlP")
 VERB_CODES = ("Sup", "Inf", "IndPrSg1")
 
-# Отсутствующую форму Ekilex отдаёт строкой '-'.
+# Ekilex returns a missing form as the string '-'.
 ABSENT = "-"
 
 
 class EkilexError(RuntimeError):
-    """Словарь недоступен: нет ключа, нет сети или отказ API."""
+    """The dictionary is unavailable: no key, no network, or the API refused."""
 
 
 @dataclass
@@ -77,7 +78,7 @@ def _get(path: str, key: str):
 
 
 def fetch(word: str, key: str) -> list[dict]:
-    """Все парадигмы всех эстонских омонимов слова, как есть из API."""
+    """All paradigms of all Estonian homonyms of the word, raw from the API."""
     found = _get("/word/search/" + urllib.parse.quote(word), key).get("words", [])
     out = []
     for entry in found:
@@ -100,12 +101,12 @@ def fetch(word: str, key: str) -> list[dict]:
 
 
 class Dictionary:
-    """Кешированный доступ к словарю поверх индекса."""
+    """Cached dictionary access on top of the index."""
 
     def __init__(self, con: sqlite3.Connection, key: str | None = None):
         self.con = con
         self.key = key if key is not None else api_key()
-        # Сколько слов пришло из сети, а сколько из кеша — для лога.
+        # How many words came from the network vs. the cache — for the log.
         self.fetched = 0
         self.cached = 0
 
@@ -121,12 +122,13 @@ class Dictionary:
         return data
 
     def lookup_many(self, words: list[str]) -> dict[str, list[Paradigm]]:
-        """Слово → его парадигмы; пустой список — слова в словаре нет.
+        """Word → its paradigms; an empty list means the word isn't in the dictionary.
 
-        Сеть только для того, чего нет в кеше, и параллельно: двадцать
-        пять слов темы по одному — это полсотни запросов подряд.
-        Без ключа и без сети — EkilexError, а не пустой ответ: «словарь
-        не спросили» и «слова в словаре нет» должны различаться.
+        Network only for what isn't cached, and in parallel: twenty-five
+        topic words one by one is fifty requests in a row.
+        Without a key or network it's EkilexError, not an empty answer:
+        "didn't ask the dictionary" and "word not in the dictionary" must
+        be distinguishable.
         """
         wanted = list(dict.fromkeys(w.strip().lower() for w in words if w.strip()))
         result: dict[str, list[dict]] = {}
@@ -161,15 +163,15 @@ class Dictionary:
 
 
 def canonical(paradigms: list[Paradigm], verb: bool) -> list[list[str]]:
-    """Варианты каждой канонической формы по всем парадигмам и омонимам.
+    """Variants of each canonical form across all paradigms and homonyms.
 
-    Варианты складываем, а не выбираем: у armas две законные парадигмы
-    (armsat и armast), у tee (чай/дорога) партитив мн. ч. и teid, и teesid.
-    Пустой список на месте формы — словарь её не признаёт: у вещественного
-    keskküte нет множественного числа вовсе.
+    Variants are merged, not chosen: armas has two legitimate paradigms
+    (armsat and armast), tee (tea/road) has both teid and teesid as the
+    partitive plural. An empty list in a form's place means the dictionary
+    doesn't accept it: the mass noun keskküte has no plural at all.
     """
     codes = VERB_CODES if verb else NOUN_CODES
-    # Под одним заголовком изредка живут и глагол, и имя — берём свой класс.
+    # One headword occasionally holds both a verb and a noun — take our own class.
     own = [p for p in paradigms if (p.word_class == "verb") == verb] or paradigms
     out: list[list[str]] = []
     for code in codes:
@@ -190,14 +192,14 @@ def is_invariant(paradigms: list[Paradigm]) -> bool:
     )
 
 
-# Слово, которое живёт во множественном числе (püksid, kaerahelbed), на
-# карточке пишут формами мн. ч. — и это законно, а не ошибка в форме.
+# A word that lives in the plural (püksid, kaerahelbed) is written on the
+# card with plural forms — and that's legitimate, not a form error.
 PLURAL_OF = {"SgN": "PlN", "SgG": "PlG", "SgP": "PlP"}
 
 
 def allowed_forms(paradigms: list[Paradigm], verb: bool) -> list[list[str]]:
-    """Что принимается на каждой позиции карточки: канонические варианты,
-    а у имени на первых трёх — ещё и форма мн. ч. того же падежа."""
+    """What's accepted at each card position: the canonical variants, and for
+    a noun's first three also the plural form of the same case."""
     allowed = canonical(paradigms, verb)
     if not verb:
         for i, code in enumerate(NOUN_CODES[:3]):
@@ -211,11 +213,12 @@ def allowed_forms(paradigms: list[Paradigm], verb: bool) -> list[list[str]]:
 def check_forms(
     word: str, verb: bool, forms: list[str], paradigms: list[Paradigm], labels
 ) -> tuple[list[str], list[str]]:
-    """(отказы, предупреждения) по формам одного слова.
+    """(rejections, warnings) for one word's forms.
 
-    Слова нет в словаре — только предупреждение: редкое сложное слово
-    там может и отсутствовать, а запрещать его нельзя. Форма расходится
-    со словарём — отказ, вместе с тем, что словарь считает верным.
+    A word missing from the dictionary is only a warning: a rare compound
+    may well be absent, and it can't be forbidden. A form that disagrees
+    with the dictionary is a rejection, along with what the dictionary
+    considers correct.
     """
     if not paradigms:
         return [], [f"{word}: not in the EKI dictionary — forms not verified"]

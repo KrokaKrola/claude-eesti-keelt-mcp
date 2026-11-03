@@ -1,5 +1,5 @@
-"""Сверка форм со словарём EKI — без сети, на парадигмах из живых ответов
-Ekilex (сокращены до нужных кодов)."""
+"""Checking forms against the EKI dictionary — no network, on paradigms
+from live Ekilex responses (trimmed to the needed codes)."""
 import json
 import sqlite3
 
@@ -24,7 +24,7 @@ EDASI = [Paradigm("edasi", "muutumatu", {})]
 
 
 def test_wrong_verb_form_is_rejected_with_the_right_one():
-    """'kudub' вместо koob так и записалось в 14. Riidepoes."""
+    """'kudub' instead of koob was written as is into 14. Riidepoes."""
     wrong, _ = check_forms("kuduma", True, ["Kuduma", "kududa", "kudun"], KUDUMA, VERB_LABELS)
     assert wrong == ["kuduma: 3-я форма (mina-vorm) 'kudun' — the dictionary has koon"]
 
@@ -80,7 +80,7 @@ def test_cache_spares_the_network(con, monkeypatch):
 
 
 def test_no_key_is_an_error_not_an_empty_dictionary(con):
-    """«Словарь не спросили» и «слова нет в словаре» должны различаться."""
+    """"Didn't ask the dictionary" and "word not in the dictionary" must differ."""
     with pytest.raises(ekilex.EkilexError):
         Dictionary(con, key="").lookup_many(["kuduma"])
 

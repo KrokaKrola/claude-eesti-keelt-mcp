@@ -1,9 +1,9 @@
-"""Тесты не пишут в рабочий лог.
+"""Tests don't write to the working log.
 
-server.py открывает data/server.log при импорте, и прогон тестов
-оставлял там строки с чужими путями и выдуманной темой «12. Poes» —
-вперемешку с настоящими сессиями. Переменную ставим до первого
-импорта сервера: conftest загружается раньше модулей с тестами.
+server.py opens data/server.log on import, and test runs left lines with
+foreign paths and a made-up topic «12. Poes» there — mixed in with real
+sessions. The variable is set before the server's first import: conftest
+loads before the test modules.
 """
 import os
 

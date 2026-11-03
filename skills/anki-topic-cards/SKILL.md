@@ -222,7 +222,7 @@ Don't retry in a loop, and don't create any cards until the user answers. Cards 
 
 If the user says to go ahead: compose from your own knowledge of the topic, skip `vocab_check` and `text_check`, and repeat at the top of the report that coverage was not checked and duplicates were not filtered. Note that without the server there is no way to write the cards either — say so instead of looking for another route.
 
-**`topic_write` failing is a different thing.** Reading works with Anki closed, writing does not. If the call answers «Anki не запущен» or «не достучался до аддона», the drafted cards are intact and nothing was written: ask the user to open Anki, then call again with the same words.
+**`topic_write` failing is a different thing.** Reading works with Anki closed, writing does not. If the call answers «cannot reach the add-on … Is Anki running?», the drafted cards are intact and nothing was written: ask the user to open Anki, then call again with the same words.
 
 ### Reading the marks
 

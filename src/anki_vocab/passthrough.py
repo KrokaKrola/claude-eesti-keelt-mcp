@@ -1,14 +1,14 @@
-"""Ленивая выдача инструментов аддона.
+"""Lazy exposure of the add-on's tools.
 
-Аддон умеет 41 вещь, и его схемы весят 15 500 токенов. Они лежат в
-контексте каждого разговора, даже когда речь не про Anki: модель видит
-только то, что приехало в запросе, поэтому список инструментов обязан
-приехать заранее.
+The add-on can do 41 things, and its schemas weigh 15,500 tokens. They sit
+in the context of every conversation, even ones that have nothing to do
+with Anki: the model only sees what arrived in the request, so the tool
+list has to arrive up front.
 
-Здесь он не приезжает. В контексте живут две маленькие ручки: одна
-показывает оглавление и по требованию достаёт схему нужного
-инструмента, вторая его вызывает. Разведка стоит ~1100 токенов и
-случается только в тех разговорах, где до Anki реально дошло дело.
+Here it doesn't. Two small handles live in the context: one shows the
+table of contents and fetches a tool's schema on demand, the other calls
+it. Discovery costs ~1100 tokens and only happens in conversations that
+actually get to Anki.
 """
 from __future__ import annotations
 
@@ -21,16 +21,16 @@ from .write import AnkiError, call, rpc
 
 CACHE = DATA_DIR / "anki_tools.json"
 
-# Ответ аддона на большой коллекции доходит до 30 КБ (list_decks на 115
-# колодах). Режем с явной пометкой: молча обрезанный список хуже, чем
-# честно короткий.
+# The add-on's response on a large collection reaches 30 KB (list_decks on
+# 115 decks). Truncate with an explicit marker: a silently cut list is worse
+# than an honestly short one.
 MAX_RESULT = 12000
 
-# Инструменты аддона, которые только читают. Список ведём именно их, а
-# не пишущих: аддон добавляет новые инструменты, и неизвестный должен
-# считаться записью — пусть лог лишний раз скажет «мимо topic_write»,
-# чем промолчит. Список пишущих по префиксам так и промолчал о 60
-# переносах карточек через card_management.
+# Add-on tools that only read. We list these rather than the writing ones:
+# the add-on adds new tools, and an unknown one must count as a write —
+# better the log says "bypassing topic_write" once too often than stay
+# silent. A prefix list of writers did stay silent about 60 card moves
+# via card_management.
 READ_ONLY = {
     "cards_stats", "find_notes", "get_card_memory_state", "get_due_cards",
     "get_fsrs_params", "get_media_files_names", "list_decks",
@@ -40,8 +40,8 @@ READ_ONLY = {
     "gui_show_answer", "gui_show_question",
 }
 
-# Действия многоцелевых инструментов (card_management, tag_management,
-# filtered_deck, …), которые ничего не меняют.
+# Actions of multi-purpose tools (card_management, tag_management,
+# filtered_deck, …) that change nothing.
 READ_ONLY_ACTIONS = {"get_tags", "get_info"}
 
 
@@ -52,14 +52,14 @@ def mutating(tool: str, args: dict | None = None) -> bool:
     params = args.get("params")
     if isinstance(params, dict) and params.get("action") in READ_ONLY_ACTIONS:
         return False
-    # Оптимизатор FSRS без apply_results — пробный прогон.
+    # The FSRS optimizer without apply_results is a dry run.
     if tool == "optimize_fsrs_params" and not args.get("apply_results"):
         return False
     return True
 
 
-# Схем больше нескольких сразу не отдаём: широкий шаблон вроде 'a' иначе
-# вывалит все 41 и сведёт всю затею на нет.
+# Don't return more than a few schemas at once: a broad pattern like 'a'
+# would otherwise dump all 41 and defeat the whole point.
 MAX_SCHEMAS = 4
 
 
@@ -68,11 +68,11 @@ def _fetch() -> list[dict]:
 
 
 def catalog(refresh: bool = False) -> tuple[list[dict], str]:
-    """Оглавление аддона и пометка, откуда оно взялось.
+    """The add-on's table of contents and a note on where it came from.
 
-    Живой список точнее — аддон обновляется и переименовывает действия
-    (forget → forget_cards уже случалось). Но с закрытым Anki оглавление
-    тоже нужно, поэтому последний удачный ответ лежит на диске.
+    The live list is more accurate — the add-on updates and renames actions
+    (forget → forget_cards has happened). But the table of contents is
+    needed with Anki closed too, so the last good response is kept on disk.
     """
     if not refresh and CACHE.exists():
         try:
@@ -102,8 +102,8 @@ def names(tools: list[dict]) -> str:
 
 
 def match(tools: list[dict], pattern: str) -> list[dict]:
-    """Точное имя выигрывает у подстроки: 'sync' не должен приводить
-    заодно и sync_state, если инструмент с таким именем есть."""
+    """An exact name beats a substring: 'sync' must not also bring in
+    sync_state when a tool with that exact name exists."""
     needle = pattern.strip().lower()
     exact = [t for t in tools if t["name"].lower() == needle]
     if exact:
@@ -133,9 +133,9 @@ def describe(tools: list[dict], pattern: str, source: str) -> str:
 
 
 def result_text(payload: dict) -> str:
-    """Ответ аддона едет с отступами и вторым экземпляром в
-    structuredContent. Мы уже взяли разобранную копию, осталось не
-    печатать её красиво."""
+    """The add-on's response comes indented and with a second copy in
+    structuredContent. We already took the parsed copy; just don't
+    pretty-print it."""
     text = json.dumps(payload, ensure_ascii=False)
     if len(text) <= MAX_RESULT:
         return text

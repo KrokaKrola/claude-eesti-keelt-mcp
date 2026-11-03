@@ -1,4 +1,4 @@
-"""Пути и классификация тегов."""
+"""Paths and tag classification."""
 from __future__ import annotations
 
 import os
@@ -15,27 +15,27 @@ _DEFAULT_COLLECTION = (
 COLLECTION = Path(os.environ.get("ANKI_COLLECTION", _DEFAULT_COLLECTION))
 INDEX = DATA_DIR / "vocab.sqlite"
 
-# Настройки аддона Anki MCP Server: оттуда берём адрес и порт, на
-# которых он слушает. Пользователь может поменять их мышкой. Папка Anki
-# своя на каждой ОС, поэтому путь выводим из коллекции:
-# <Anki2>/<профиль>/collection.anki2 → <Anki2>/addons21/.
+# Anki MCP Server add-on settings: the host and port it listens on.
+# The user can change them in the add-on's config dialog. Anki's folder
+# differs per OS, so the path is derived from the collection:
+# <Anki2>/<profile>/collection.anki2 → <Anki2>/addons21/.
 ADDON_META = COLLECTION.parent.parent / "addons21/124672614/meta.json"
 
-# Файлы SQLite, которые нужно копировать вместе: без -wal данные отстают.
+# SQLite files that must be copied together: without -wal the data lags behind.
 COLLECTION_PARTS = ("", "-wal", "-shm")
 
 EXPECTED_SCHEMA_VER = 18
 INDEX_VERSION = 8
 
-# Поднимать при любой правке логики разбора в lemma.py: иначе кэш молча
-# отдаёт разборы, посчитанные старым кодом.
+# Bump on any change to the parsing logic in lemma.py: otherwise the cache
+# silently serves analyses computed by the old code.
 LEMMATIZER_VERSION = 3
 
-# Область видимости индекса. Сопоставление идёт по границе '::',
-# так что 'A1' не зацепит соседнюю ветку с похожим началом.
+# Index scope. Matching is on the '::' boundary, so 'A1' won't catch
+# a sibling branch with a similar prefix.
 INCLUDED_DECK_PREFIXES = ("kursuse eesti keel",)
 
-# Временно: эти ветки ещё в старых форматах, их конвертация впереди.
+# Temporary: these branches still use old formats and await conversion.
 EXCLUDED_DECK_PREFIXES = (
     "en words",
     "kursuse eesti keel::A1",
@@ -73,10 +73,10 @@ POS_TAGS = {
     "междометие": "междометие",
 }
 
-# Теги про формат карточки, а не про смысл слова.
+# Tags about the card format, not the word's meaning.
 SERVICE_TAGS = {"typein", "lause", "предложение", "аудио", "audio", "marked", "leech"}
 
-# Служебные слова: в покрытии не считаются ни известными, ни новыми.
+# Function words: counted neither as known nor as new in coverage.
 FUNCTION_WORDS = {
     "olema", "ei", "ja", "ning", "aga", "või", "et", "kui", "siis", "ka",
     "ma", "sa", "ta", "me", "te", "nad", "mina", "sina", "tema", "meie",
@@ -87,54 +87,55 @@ FUNCTION_WORDS = {
     "üks", "kõik", "iga", "mõni", "palju", "vähe",
 }
 
-# Доза новых слов в предложениях колоды 03. Единственное место, где эти
-# числа живут: topic_write по ним считает, скилл на них ссылается.
-# Предложения, собранные только из известного, не учат ничему сверх
-# целевого слова — тема 11. Lähme välja не принесла ни одного нового.
-NEW_EVERY = 3   # одно новое слово примерно на каждое третье слово темы
-NEW_MAX = 5     # потолок на одно заполнение темы
+# Dose of new words in deck-03 sentences. The only place these numbers
+# live: topic_write computes with them, the skill refers to them.
+# Sentences built only from known words teach nothing beyond the target
+# word — topic 11. Lähme välja brought in not a single new one.
+NEW_EVERY = 3   # roughly one new word per three topic words
+NEW_MAX = 5     # cap per topic fill
 
-# Тему заполняют несколькими вызовами topic_write, и считать дозу на
-# вызов нельзя: пять вызовов по слову требовали пять новых слов, а тема,
-# разбитая на пять пачек, получала пять потолков. Поэтому вызовы одной
-# темы за это окно складываются в одно заполнение.
+# A topic is filled by several topic_write calls, and the dose can't be
+# counted per call: five one-word calls demanded five new words, and a
+# topic split into five batches got five caps. So calls for one topic
+# within this window add up to a single fill.
 DOSE_WINDOW_HOURS = 12
 
-# Сколько раз слово должно попасться в примерах, чтобы перестать считаться
-# полузнакомым. Ветка A1 из индекса исключена (EXCLUDED_DECK_PREFIXES), и
-# без порога в «полузнакомые» уезжали täna (143 попадания), koer (93),
-# ema (47) — то есть ровно то, что человек знает лучше всего. Настоящее
-# полузнакомое встречалось один-два раза: ümbrik, pakiautomaat.
+# How many times a word must appear in examples to stop counting as
+# half-known. The A1 branch is excluded from the index (EXCLUDED_DECK_PREFIXES),
+# and without a threshold täna (143 hits), koer (93), ema (47) ended up
+# "half-known" — exactly the words the learner knows best. Genuinely
+# half-known words appeared once or twice: ümbrik, pakiautomaat.
 HALF_KNOWN_MAX = 2
 
-# Повтор одного слова в примерах. Само по себе покрытие от этого не
-# защищает: десять предложений подряд с panema дают честные 100%, и
-# text_check их пропускал. В теме 12. Poes так и вышло — panema в 10
-# предложениях из 133, девять из них за два дня.
+# Repetition of one word across examples. Coverage alone doesn't guard
+# against it: ten sentences in a row with panema score an honest 100%, and
+# text_check let them through. That's what happened in topic 12. Poes —
+# panema in 10 of 133 sentences, nine of them within two days.
 #
-# Порог внутри пачки — корень из её размера. Два повтора на три
-# предложения это однообразие, два на восемьдесят — совпадение, так что
-# константа не годится; доля тоже не годится, потому что 25% от восьмидесяти
-# не наберёт никто. Корень держится посередине: 2 из 6, 4 из 16, 9 из 80.
-# Замеры на всех темах A2: постоянный потолок в 4 давал по 20 слов в строке
-# (максимум 111), корень — 4 в среднем и не больше 9.
-REPEAT_MIN = 2          # ниже этого не считаем повтором никогда
-REPEAT_SHOWN = 6       # столько слов в каждой из двух строк
+# The in-batch threshold is the square root of the batch size. Two repeats
+# in three sentences is monotony, two in eighty is coincidence, so a
+# constant won't do; a ratio won't either, since nobody reaches 25% of
+# eighty. The root sits in between: 2 of 6, 4 of 16, 9 of 80.
+# Measured on all A2 topics: a constant cap of 4 gave 20 words per line
+# (max 111), the root — 4 on average and never more than 9.
+REPEAT_MIN = 2          # never count fewer than this as a repeat
+REPEAT_SHOWN = 6       # words shown in each of the two lines
 
-# Второй повод — вес слова во всей теме, и без него капельный случай не
-# ловится вовсе: panema набирался в 12. Poes по одному-два за вызов, а
-# порог пачки на такое не срабатывает по определению.
+# The second trigger is the word's weight across the whole topic; without
+# it the drip case isn't caught at all: panema accumulated in 12. Poes one
+# or two per call, and the batch threshold can't fire on that by design.
 #
-# Одного числа мало: у 12. Poes на 613 предложений «шесть раз» набирает
-# половина словаря. Поэтому берём вершину рейтинга темы. Длину вершины
-# подбирали по той же теме: при 12 словах panema не попадал в неё до
-# самого конца (его закрывали uus, suur, müüja и прочие), и из десяти его
-# предложений предупреждение получили бы два; при 25 — все десять.
-REPEAT_IN_TOPIC = 6     # реже — на рейтинг не смотрим вовсе
-REPEAT_TOP = 25         # длина вершины
+# One number isn't enough: in 12. Poes, with 613 sentences, half the
+# vocabulary reaches "six times". So we take the top of the topic's
+# ranking. Its length was tuned on the same topic: with 12 words panema
+# didn't make the top until the very end (uus, suur, müüja and others
+# crowded it out), and only two of its ten sentences would have been
+# flagged; with 25 — all ten.
+REPEAT_IN_TOPIC = 6     # below this, don't look at the ranking at all
+REPEAT_TOP = 25         # length of the top
 
-# Глаголы-каркас: без них фразу не построить, и ротировать их незачем —
-# те же слова, которые vocab_pool не показывает в подсказках.
+# Scaffold verbs: you can't build a sentence without them and there's no
+# point rotating them — the same words vocab_pool leaves out of hints.
 STRUCTURAL_VERBS = {
     "minema", "tulema", "tegema", "saama", "tahtma", "meeldima",
     "pidama", "võima", "käima", "hakkama", "olema",

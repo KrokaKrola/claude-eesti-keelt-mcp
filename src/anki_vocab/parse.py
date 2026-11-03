@@ -1,4 +1,4 @@
-"""Разбор заметок Anki: поля → (эстонские формы, перевод, примеры, теги)."""
+"""Parsing Anki notes: fields → (Estonian forms, translation, examples, tags)."""
 from __future__ import annotations
 
 import html
@@ -15,30 +15,30 @@ _SOUND_RE = re.compile(r"\[sound:[^\]]*\]")
 _SPACE_RE = re.compile(r"[\s ]+")
 _CYRILLIC_RE = re.compile(r"[а-яёА-ЯЁ]")
 _CYRILLIC_RUN_RE = re.compile(r"[а-яёА-ЯЁ]+[\s:.,—-]*")
-# Слово — любые буквы, кроме кириллицы: по ней эстонская сторона
-# отделяется от русской. Узкий набор «только эстонский алфавит» молча
-# резал опечатку 'éesti' на 'e' и 'esti', и проверка её не узнавала.
+# A word is any letters except Cyrillic: Cyrillic is what separates the
+# Estonian side from the Russian one. A narrow "Estonian alphabet only" set
+# silently cut the typo 'éesti' into 'e' and 'esti', and the check missed it.
 _LETTER = r"(?:(?![а-яёА-ЯЁ])[^\W\d_])"
 _WORD_RE = re.compile(rf"{_LETTER}+(?:['’-]{_LETTER}+)*")
-# Часть карточек Basic — это «слово + список его форм» с русскими подписями:
+# Some Basic cards are "word + list of its forms" with Russian labels:
 #   koer  1-я форма (номинатив): koer  2-я форма (генитив): koera  ...
-# Ловим саму метку целиком. Проверять просто наличие слова «форма» нельзя:
-# на карточках-предложениях бывает пояснение «nad lähevad — мн.ч. от minema»,
-# и тогда предложение разлеталось на «формы».
+# We match the whole label. Just checking for the word «форма» won't do:
+# sentence cards sometimes carry a note like «nad lähevad — мн.ч. от minema»,
+# and the sentence then got split into "forms".
 _FORM_LABEL_RE = re.compile(
     r"(?:\d\s*-?\s*я\s+форма|мн\.\s*ч\.)\s*(?:\([^)]*\))?\s*:", re.I
 )
-# Карточки-тренажёры с пропуском: '___ kleidid on (ilus). (эти)'.
-# Это упражнение, а не словарная статья — переводом там и не пахнет.
+# Fill-in-the-blank drill cards: '___ kleidid on (ilus). (эти)'.
+# That's an exercise, not a dictionary entry — there's no translation in it.
 _EXERCISE_RE = re.compile(r"_{2,}")
-# Хвосты подписей, которые латиницей и потому пролезают в слова.
+# Label tails written in Latin script that would otherwise leak into words.
 _LABEL_NOISE = {"nom", "pl", "sg", "gen", "part", "acc", "ma", "da", "vorm", "mina"}
 
 LEVEL_ORDER = {lvl: i for i, lvl in enumerate(["a1", "a2", "b1", "b2", "c1", "c2"])}
 
 
 def clean(raw: str) -> str:
-    """Поля хранят HTML: у Basic (and reversed card) там инлайновые div со стилями."""
+    """Fields hold HTML: Basic (and reversed card) has inline styled divs."""
     s = _SOUND_RE.sub(" ", raw or "")
     s = _TAG_RE.sub(" ", s)
     s = html.unescape(s)
@@ -46,8 +46,8 @@ def clean(raw: str) -> str:
 
 
 def words(text: str) -> list[str]:
-    # Диакритика бывает и составной (e + U+0301) — без NFC буква
-    # распадается и слово режется надвое.
+    # Diacritics may be combining (e + U+0301) — without NFC the letter
+    # falls apart and the word gets split in two.
     return _WORD_RE.findall(unicodedata.normalize("NFC", text))
 
 
@@ -56,7 +56,7 @@ def has_cyrillic(text: str) -> bool:
 
 
 def strip_cyrillic(text: str) -> str:
-    """Убирает русские вставки: 'Переведи: Ma olen õpetaja.' → 'Ma olen õpetaja.'"""
+    """Strips Russian inserts: 'Переведи: Ma olen õpetaja.' → 'Ma olen õpetaja.'"""
     return _SPACE_RE.sub(" ", _CYRILLIC_RUN_RE.sub(" ", text)).strip(" :-—,.")
 
 
@@ -85,11 +85,11 @@ class ParsedNote:
 
     @property
     def is_phrase(self) -> bool:
-        """Фразы и упражнения не участвуют в палитре и не дают толкований.
+        """Phrases and exercises don't enter the palette and give no glosses.
 
-        Структурированные типы гарантируют словарную статью, даже если
-        слов несколько: 'korda tegema', 'välja viima' — это фразовые
-        глаголы, полноценные единицы словаря, а не предложения.
+        Structured note types guarantee a dictionary entry even with
+        several words: 'korda tegema', 'välja viima' are phrasal verbs,
+        full vocabulary units, not sentences.
         """
         if self.force_lexical:
             return False
@@ -116,12 +116,12 @@ def parse_tags(raw: str) -> tuple[str | None, str | None, list[str]]:
 def _three_forms(
     f: list[str], n_forms: int = 3
 ) -> tuple[list[tuple[str, str]], list[tuple[str, str]]]:
-    """Раскладка позиционная: Russian, формы, три пары примеров.
+    """Positional layout: Russian, forms, three example pairs.
 
-    Число форм приходит снаружи, потому что типы заметок разошлись: у
-    'Estonian 3 Forms' добавилось поле Form4 (партитив мн. ч.), а старая
-    'Estonian Word Forms' осталась с тремя — и примеры у них съехали
-    друг относительно друга на одну позицию.
+    The form count comes from outside because the note types diverged:
+    'Estonian 3 Forms' gained a Form4 field (partitive plural), while the
+    old 'Estonian Word Forms' kept three — so their examples are shifted
+    by one position relative to each other.
     """
     slots = [
         (f"Form{i}", clean(f[i]))
@@ -150,10 +150,10 @@ def parse_note(notetype: str, flds: str, tags: str) -> ParsedNote | None:
         lexical = True
 
     elif notetype == "Estonian Word Forms with TypeIn":
-        # Одна заметка = одна форма одного слова; склейка по (ru, лемма) в индексе.
+        # One note = one form of one word; merged by (ru, lemma) in the index.
         answer = clean(f[2]) if len(f) > 2 else ""
-        # Поле Form заполнено только у карточек на форму слова;
-        # у карточек-предложений (колода '03. lause typein') оно пустое.
+        # The Form field is filled only on word-form cards;
+        # on sentence cards (deck '03. lause typein') it's empty.
         lexical = bool(clean(f[1])) if len(f) > 1 else False
         slots = [("Answer", answer)] if answer else []
         ru = clean(f[0]) if f else ""
@@ -168,13 +168,13 @@ def parse_note(notetype: str, flds: str, tags: str) -> ParsedNote | None:
         examples = []
 
     elif notetype.startswith("Basic"):
-        # Стороны непостоянны, и обе могут быть смешанными: спереди бывает
-        # «Переведи: <эстонская фраза>», сзади — слово со списком форм
-        # и русскими подписями. Ориентируемся на то, где больше латиницы.
+        # Sides are inconsistent and both may be mixed: the front may say
+        # «Переведи: <Estonian phrase>», the back — a word with a form list
+        # and Russian labels. Go by whichever side has more Latin script.
         front = clean(f[0]) if f else ""
         back = clean(f[1]) if len(f) > 1 else ""
-        # Упражнение, а не словарная статья: пропуск '___' или обе стороны
-        # на эстонском (грамматические дриллы вроде 'Need riided on ilusad').
+        # An exercise, not a dictionary entry: a '___' blank or both sides
+        # in Estonian (grammar drills like 'Need riided on ilusad').
         drill = bool(_EXERCISE_RE.search(front) or _EXERCISE_RE.search(back))
         lat_front, lat_back = estonian_words(front), estonian_words(back)
         if not lat_front and not lat_back:
@@ -187,9 +187,9 @@ def parse_note(notetype: str, flds: str, tags: str) -> ParsedNote | None:
         if not has_cyrillic(ru):
             drill = True
         segments = _FORM_LABEL_RE.split(et_side)
-        if len(segments) >= 3:  # минимум две подписи — это точно список форм
-            # Из каждого отрезка берём первое эстонское слово: остальное —
-            # пояснения и пример, который часто идёт следом за формами.
+        if len(segments) >= 3:  # at least two labels — surely a form list
+            # Take the first Estonian word of each segment: the rest is
+            # explanations and an example that often follows the forms.
             forms = []
             for segment in segments:
                 found = estonian_words(segment)

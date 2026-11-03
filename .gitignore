@@ -4,5 +4,7 @@ __pycache__/
 data/
 .pytest_cache/
 
-# в бэкапе лежит рабочий конфиг Claude Desktop — в нём API-ключ ElevenLabs
-backup/**/claude_desktop_config.json
+# local notes and backups, kept out of the public repo
+PLAN.md
+backup/
+skills/anki-topic-cards/OLD_SKILL.md

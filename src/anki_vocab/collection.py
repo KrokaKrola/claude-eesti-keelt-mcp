@@ -1,10 +1,10 @@
-"""Безопасное чтение коллекции Anki.
+"""Safe reading of the Anki collection.
 
-Живую коллекцию мы не открываем через SQLite никогда — даже на чтение.
-Соединение без mode=ro делает чекпоинт WAL при закрытии, а Anki держит
-ту же базу открытой; две сборки SQLite чекпоинтят её наперегонки и
-коллекция превращается в DatabaseCorrupt. Вместо этого копируем файлы
-(cp только читает и повредить источник не может) и открываем копию.
+We never open the live collection via SQLite — not even read-only.
+A connection without mode=ro checkpoints the WAL on close, while Anki keeps
+the same database open; two SQLite builds checkpoint it in a race and the
+collection turns into DatabaseCorrupt. Instead we copy the files
+(cp only reads and cannot damage the source) and open the copy.
 """
 from __future__ import annotations
 
@@ -29,15 +29,15 @@ def _unicase(a: str, b: str) -> int:
 
 
 def register_collations(con: sqlite3.Connection) -> None:
-    """Схема Anki объявляет свою коллацию; без неё падают запросы к decks."""
+    """Anki's schema declares its own collation; without it queries on decks fail."""
     con.create_collation("unicase", _unicase)
 
 
 def fingerprint(path: Path = COLLECTION) -> tuple:
-    """Отпечаток всех частей базы.
+    """Fingerprint of all database parts.
 
-    Смотреть только на .anki2 нельзя: он меняется редко, вся свежая
-    работа идёт в -wal.
+    Looking only at .anki2 is not enough: it changes rarely, all fresh
+    work goes to -wal.
     """
     out = []
     for suffix in COLLECTION_PARTS:
@@ -51,7 +51,7 @@ def fingerprint(path: Path = COLLECTION) -> tuple:
 
 
 def _copy_parts(path: Path, dest: Path) -> None:
-    # Старый -wal рядом с новой базой = гарантированно битая копия.
+    # A stale -wal next to a fresh database = a guaranteed corrupt copy.
     for suffix in COLLECTION_PARTS:
         stale = Path(str(dest) + suffix)
         if stale.exists():
@@ -65,25 +65,25 @@ def _copy_parts(path: Path, dest: Path) -> None:
 def _verify(con: sqlite3.Connection) -> None:
     status = con.execute("pragma integrity_check").fetchone()[0]
     if status != "ok":
-        raise CollectionError(f"копия повреждена: {status}")
+        raise CollectionError(f"copy is corrupt: {status}")
     ver = con.execute("select ver from col").fetchone()[0]
     if ver != EXPECTED_SCHEMA_VER:
         raise CollectionError(
-            f"схема Anki {ver}, ожидалась {EXPECTED_SCHEMA_VER}. "
-            "Раскладка таблиц могла измениться — разбирать вслепую нельзя."
+            f"Anki schema {ver}, expected {EXPECTED_SCHEMA_VER}. "
+            "Table layout may have changed — refusing to parse blindly."
         )
 
 
 def open_snapshot(
     dest: Path, path: Path = COLLECTION, attempts: int = 3
 ) -> sqlite3.Connection:
-    """Копирует базу вместе с -wal/-shm и отдаёт соединение к копии.
+    """Copy the database with -wal/-shm and return a connection to the copy.
 
-    Копия живой базы может попасть в середину записи и выйти порванной —
-    страдает только одноразовый файл, поэтому просто пробуем ещё раз.
+    A copy of a live database may land mid-write and come out torn —
+    only the throwaway file suffers, so we just try again.
     """
     if not Path(path).exists():
-        raise CollectionError(f"коллекция не найдена: {path}")
+        raise CollectionError(f"collection not found: {path}")
     dest.parent.mkdir(parents=True, exist_ok=True)
 
     last: Exception | None = None
@@ -99,17 +99,17 @@ def open_snapshot(
             con.close()
             if attempt < attempts - 1:
                 time.sleep(0.2)
-    raise CollectionError(f"не удалось снять целую копию за {attempts} попытки: {last}")
+    raise CollectionError(f"could not take an intact copy in {attempts} attempts: {last}")
 
 
 @contextmanager
 def snapshot(path: Path = COLLECTION) -> Iterator[sqlite3.Connection]:
-    """Своя копия на каждый вызов, удаляется сразу после.
+    """A private copy per call, deleted right after.
 
-    Claude Desktop запускает сервер двумя процессами, и с общим файлом
-    копии один процесс удалял и перезаписывал её, пока другой читал:
-    .anki2 от одной копии рядом с -wal от другой SQLite молча не
-    доигрывает, и данные выходят устаревшими без всякой ошибки.
+    Claude Desktop runs the server as two processes, and with a shared copy
+    file one process deleted and rewrote it while the other was reading:
+    SQLite silently won't replay a -wal from one copy next to an .anki2
+    from another, and the data comes out stale without any error.
     """
     with tempfile.TemporaryDirectory(prefix="anki-vocab-") as tmp:
         con = open_snapshot(Path(tmp) / "collection.anki2", path)
@@ -120,7 +120,7 @@ def snapshot(path: Path = COLLECTION) -> Iterator[sqlite3.Connection]:
 
 
 def deck_names(con: sqlite3.Connection) -> dict[int, str]:
-    """decks.name разделён \\x1f, а не '::' — скилл ждёт второй вид."""
+    """decks.name is separated by \\x1f, not '::' — the skill expects the latter."""
     return {
         did: name.replace("\x1f", "::")
         for did, name in con.execute("select id, name from decks")
@@ -132,8 +132,8 @@ def notetype_names(con: sqlite3.Connection) -> dict[int, str]:
 
 
 def note_decks(con: sqlite3.Connection) -> dict[int, int]:
-    """Колода заметки через любую её карточку: заметок с карточками
-    в разных колодах в этой коллекции нет."""
+    """A note's deck via any of its cards: this collection has no notes
+    with cards in different decks."""
     return {
         nid: did
         for nid, did in con.execute("select nid, min(did) from cards group by nid")
@@ -141,15 +141,15 @@ def note_decks(con: sqlite3.Connection) -> dict[int, int]:
 
 
 def note_stats(con: sqlite3.Connection) -> dict[int, tuple[float, int, int]]:
-    """note_id → (средний интервал в днях, число повторов, число срывов).
+    """note_id → (mean interval in days, review count, lapse count).
 
-    Интервал повторения — единственный честный ответ на вопрос
-    «насколько хорошо человек знает это слово». Число карточек таким
-    ответом не является: у полностью обработанного слова их всегда 4.
+    The review interval is the only honest answer to "how well does the
+    learner know this word". Card count isn't: a fully processed word
+    always has 4.
 
-    Срыв (lapses) — сколько раз выученная карточка снова уехала в «Again».
-    Интервал говорит, где человек сейчас, срывы — где ему было тяжело;
-    вместе они и отделяют трудное слово от просто нового.
+    A lapse is how many times a learned card fell back to "Again".
+    The interval says where the learner is now, lapses — where it was hard;
+    together they separate a difficult word from a merely new one.
     """
     return {
         nid: (avg_ivl or 0.0, reps or 0, lapses or 0)

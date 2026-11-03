@@ -29,7 +29,7 @@ def test_three_forms():
 
 
 def test_fourth_form_may_be_empty():
-    """У глагола четвёртой формы нет, поле уезжает в Anki пустым."""
+    """A verb has no fourth form; the field goes to Anki empty."""
     p = note(
         "Estonian 3 Forms", "плавать", "ujuma", "ujuda", "ujun", "",
         "Ma lähen ujuma.", "Я иду плавать.",
@@ -42,8 +42,8 @@ def test_fourth_form_may_be_empty():
 
 
 def test_old_three_field_model_keeps_its_layout():
-    """'Estonian Word Forms' поля Form4 не получила — примеры у неё
-    начинаются на позицию раньше."""
+    """'Estonian Word Forms' didn't get a Form4 field — its examples
+    start one position earlier."""
     p = note(
         "Estonian Word Forms", "собака", "koer", "koera", "koera",
         "Koer magab.", "Собака спит.",
@@ -88,12 +88,12 @@ def test_russian_instruction_is_stripped_from_estonian_side():
 
 def test_fill_in_drill_is_not_a_vocabulary_card():
     p = note("Basic", "___ kleidid on (ilus). (эти)", "Need kleidid on ilusad")
-    assert p.is_phrase, "упражнение не должно попадать в палитру"
+    assert p.is_phrase, "an exercise must not enter the palette"
 
 
 def test_all_estonian_card_is_a_drill():
     p = note("Basic", "riided", "Need riided on ilusad")
-    assert p.is_phrase, "обе стороны эстонские — это тренажёр, не словарная статья"
+    assert p.is_phrase, "both sides Estonian — a drill, not a dictionary entry"
 
 
 def test_strip_cyrillic():
@@ -101,9 +101,9 @@ def test_strip_cyrillic():
 
 
 def test_foreign_letters_do_not_split_a_word():
-    """'éesti' резалось на 'e' и 'esti', и опечатку никто не узнавал."""
+    """'éesti' was cut into 'e' and 'esti', and nobody recognized the typo."""
     from anki_vocab.parse import words
 
     assert words("Ma suhtlen éesti keeles") == ["Ma", "suhtlen", "éesti", "keeles"]
-    assert words("éesti") == ["éesti"], "составная диакритика"
+    assert words("éesti") == ["éesti"], "combining diacritics"
     assert words("ребёнок laps") == ["laps"]

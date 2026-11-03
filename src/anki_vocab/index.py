@@ -1,4 +1,4 @@
-"""Сборка индекса словарного запаса из коллекции Anki."""
+"""Building the vocabulary index from the Anki collection."""
 from __future__ import annotations
 
 import argparse
@@ -80,17 +80,18 @@ create table if not exists lemma_cache (word text primary key, analyses text not
 
 create table if not exists outside (lemma text primary key) without rowid;
 
--- Слова, про которые человек сказал «это я знаю». Единственная таблица
--- индекса, которой нет в коллекции: восстановить её пересборкой нельзя,
--- поэтому её не сносят ни --rebuild, ни смена версии схемы.
+-- Words the learner marked as "I know this". The only index table that
+-- isn't in the collection: a rebuild can't restore it, so neither
+-- --rebuild nor a schema version change drops it.
 create table if not exists debt_skip (
   lemma text primary key,
   added integer not null
 ) without rowid;
 
--- Что уже записано в тему за текущее заполнение: доза новых слов
--- считается по всем вызовам topic_write одной темы, а не по каждому.
--- Как и debt_skip, из коллекции не восстанавливается и не сносится.
+-- What's already been written to the topic during the current fill: the
+-- new-word dose is counted across all topic_write calls for one topic, not
+-- per call. Like debt_skip, it can't be restored from the collection and
+-- is never dropped.
 create table if not exists dose_log (
   topic text    not null,
   at    integer not null,
@@ -98,8 +99,8 @@ create table if not exists dose_log (
   new   text    not null
 );
 
--- Ответы словаря Ekilex: формы слова не меняются, сеть нужна один раз.
--- Не из коллекции, поэтому пересборка индекса их не трогает.
+-- Ekilex dictionary responses: word forms don't change, so the network is
+-- needed once. Not from the collection, so an index rebuild leaves them alone.
 create table if not exists ekilex_cache (
   word    text primary key,
   data    text    not null,
@@ -113,27 +114,27 @@ create virtual table if not exists entry_fts using fts5(ru, et_raw, note_id unin
 def open_index(
     path: Path | None = None, same_thread: bool = True
 ) -> sqlite3.Connection:
-    """same_thread=False — для MCP: SDK гоняет синхронные инструменты
-    в рабочих потоках, доступ снаружи сериализуется замком.
+    """same_thread=False is for MCP: the SDK runs sync tools in worker
+    threads; outside access is serialized by a lock.
 
-    Путь берётся в момент вызова, а не при импорте: иначе тесты не могут
-    подсунуть свой индекс и лезут в рабочий.
+    The path is resolved at call time, not import time: otherwise tests
+    can't substitute their own index and end up touching the real one.
     """
     from . import config
 
     path = Path(path) if path is not None else config.INDEX
     path.parent.mkdir(parents=True, exist_ok=True)
     con = sqlite3.connect(path, check_same_thread=same_thread)
-    # WAL: сервер в Desktop держит индекс открытым, а в обычном режиме
-    # читатель блокирует писателя — CLI падал с 'database is locked'.
-    # Само переключение требует эксклюзивной блокировки, поэтому при
-    # живом соединении в старом режиме оно не пройдёт: не падаем,
-    # режим встанет при следующем одиночном открытии.
+    # WAL: the Desktop server keeps the index open, and in the default mode
+    # a reader blocks the writer — the CLI failed with 'database is locked'.
+    # Switching itself needs an exclusive lock, so with a live connection in
+    # the old mode it won't go through: don't fail, the mode will be set on
+    # the next solo open.
     con.execute("pragma busy_timeout = 10000")
     try:
         con.execute("pragma journal_mode = WAL")
     except sqlite3.OperationalError:
-        log.debug("не удалось включить WAL — индекс открыт другим процессом")
+        log.debug("could not enable WAL — index is open by another process")
     col.register_collations(con)
     con.executescript(SCHEMA)
     _guard_lemma_cache(con)
@@ -142,41 +143,41 @@ def open_index(
 
 
 def _guard_index_version(con: sqlite3.Connection) -> None:
-    """Схема индекса поменялась — старые строки не дополнить, проще
-    собрать заново: это две секунды.
+    """The index schema changed — old rows can't be patched, simpler to
+    rebuild: it takes two seconds.
 
-    Именно снести таблицы, а не почистить: 'create table if not exists'
-    выше застаёт старую таблицу и молча оставляет её без новых колонок,
-    а падает это уже на вставке, посреди сборки.
+    Drop the tables, not just clear them: 'create table if not exists'
+    above finds the old table and silently keeps it without new columns,
+    which then fails on insert, mid-build.
     """
     if _meta_get(con, "index_version") == str(INDEX_VERSION):
         return
     if con.execute("select count(*) from entry").fetchone()[0]:
-        log.info("схема индекса версии %s — пересобираю", INDEX_VERSION)
-    # debt_skip тут быть не должно никогда: она собрана из ответов
-    # человека, а не из коллекции, и пересборкой не восстанавливается.
+        log.info("index schema version %s — rebuilding", INDEX_VERSION)
+    # debt_skip must never be here: it's built from the learner's answers,
+    # not from the collection, and a rebuild can't restore it.
     for table in ("entry", "form", "lemma", "outside", "entry_fts"):
         con.execute(f"drop table if exists {table}")
     con.executescript(SCHEMA)
     _meta_set(con, "last_note_mod", 0)
     _meta_set(con, "index_version", INDEX_VERSION)
-    # Отпечаток снимаем вместе с данными. Досборка сравнивает только его,
-    # и уцелевший отпечаток означал «коллекция не менялась, индекс
-    # актуален» — поверх пустых таблиц. Сервер молча отвечал, что знает
-    # ноль слов: дублей нет, палитра пуста, всё новое.
+    # The fingerprint is dropped together with the data. Refresh compares only
+    # it, and a surviving fingerprint meant "collection unchanged, index up to
+    # date" — on top of empty tables. The server silently answered that it
+    # knew zero words: no duplicates, empty palette, everything new.
     con.execute("delete from meta where key = 'fingerprint'")
     con.commit()
 
 
 def _guard_lemma_cache(con: sqlite3.Connection) -> None:
-    """Кэш переживает пересборки, поэтому при смене логики разбора его
-    надо сбрасывать — иначе он отдаёт результаты старого кода."""
+    """The cache survives rebuilds, so it must be reset when the parsing
+    logic changes — otherwise it serves results of the old code."""
     saved = _meta_get(con, "lemmatizer_version")
     if saved == str(LEMMATIZER_VERSION):
         return
     stale = con.execute("select count(*) from lemma_cache").fetchone()[0]
     if stale:
-        log.info("лемматизатор версии %s (был %s) — сбрасываю кэш, %s записей",
+        log.info("lemmatizer version %s (was %s) — resetting cache, %s entries",
                  LEMMATIZER_VERSION, saved or "—", stale)
     con.execute("delete from lemma_cache")
     _meta_set(con, "lemmatizer_version", LEMMATIZER_VERSION)
@@ -220,24 +221,24 @@ def _store_note(
     con.execute("delete from form where note_id = ?", (note_id,))
     rows = set()
     if parsed.force_lexical and len(words(parsed.headword)) > 1:
-        # Фразовый глагол — самостоятельная единица словаря. Разложив его
-        # по словам, мы бы отдали толкование 'kokku saama' (встречаться)
-        # обычному глаголу saama (получать). Ключ — словарная форма целиком.
+        # A phrasal verb is a vocabulary unit of its own. Splitting it into
+        # words would hand the gloss of 'kokku saama' (to meet) to the plain
+        # verb saama (to get). The key is the whole dictionary form.
         key = parsed.headword.lower()
         for slot, text in parsed.slots:
             rows.add((text.lower(), key, note_id, slot))
     elif parsed.is_phrase:
-        # Предложение разбираем целиком: тег части речи на нём относится
-        # к целевому слову, а не к каждому, и омонимию снимает контекст.
+        # Parse the sentence as a whole: a POS tag on it refers to the target
+        # word, not to every word, and context resolves the ambiguity.
         for slot, text in parsed.slots:
             rows |= _sentence_rows(text, lem, note_id, slot)
     else:
         for slot, text in parsed.slots:
             for word in words(text):
                 rows.add((word.lower(), lem.lemma(word, parsed.pos), note_id, slot))
-    # Слова из примеров: человек их читает на каждом повторе, поэтому
-    # незнакомыми они не являются. В палитру не идут (слот 'example'),
-    # но дают второй ярус и отметку «когда слово встречалось в последний раз».
+    # Words from examples: the learner reads them on every review, so they
+    # aren't unfamiliar. They don't enter the palette (slot 'example'), but
+    # give a second tier and a "last seen" mark.
     for et, _ru in parsed.examples:
         rows |= _sentence_rows(et, lem, note_id, "example")
     con.executemany(
@@ -254,11 +255,11 @@ def _store_note(
 def _sentence_rows(
     text: str, lem: Lemmatizer, note_id: int, slot: str
 ) -> set[tuple[str, str, int, str]]:
-    """Слова предложения с леммами, снятыми в контексте.
+    """Sentence words with lemmas disambiguated in context.
 
-    По одному слову 'jalga' в «pani kingad jalga» разбиралось наречием, и
-    в индексе заводилась лишняя лемма — она же потом всплывала в долге
-    словом без карточки.
+    On its own, 'jalga' in «pani kingad jalga» parsed as an adverb, and the
+    index got an extra lemma — which then surfaced in the debt as a word
+    without a card.
     """
     tokens = words(text)
     return {
@@ -268,10 +269,11 @@ def _sentence_rows(
 
 
 def rebuild_lemmas(con: sqlite3.Connection) -> int:
-    """Пересборка словаря целиком: на 6.5k заметок это дешевле инкремента.
+    """Rebuild the whole vocabulary: for 6.5k notes that's cheaper than
+    incremental.
 
-    Заметки типа TypeIn лежат по одной на форму, поэтому слово собирается
-    здесь — иначе палитра вернулась бы с дублями aeg/aega/ajal.
+    TypeIn notes are stored one per form, so the word is assembled here —
+    otherwise the palette would come back with duplicates aeg/aega/ajal.
     """
     con.execute("delete from lemma")
     agg: dict[str, dict] = {}
@@ -282,16 +284,16 @@ def rebuild_lemmas(con: sqlite3.Connection) -> int:
     """
     for (lemma, form, slot, note_id, ru, pos, level, topics, is_phrase, mod,
          ivl, lapses) in con.execute(query):
-        # note_id в Anki — время создания заметки в миллисекундах.
+        # An Anki note_id is the note's creation time in milliseconds.
         from_example = slot == "example"
         slot = agg.setdefault(
             lemma,
             {
                 "forms": set(), "notes": set(), "word_notes": set(),
-                # Карточка-предложение содержит десяток слов и ничего не
-                # сообщает о части речи каждого из них: «Koer on suur» с
-                # тегом «прилагательное» — про suur, не про koer. Поэтому
-                # у слов и у фраз отдельные голоса, фразовые идут в запас.
+                # A sentence card holds a dozen words and says nothing about
+                # the POS of each: "Koer on suur" tagged «прилагательное» is
+                # about suur, not koer. So words and phrases vote separately;
+                # phrase votes are the fallback.
                 "word": {"ru": collections.Counter(), "pos": collections.Counter(),
                          "level": None, "topics": set()},
                 "any": {"ru": collections.Counter(), "pos": collections.Counter(),
@@ -308,9 +310,9 @@ def rebuild_lemmas(con: sqlite3.Connection) -> int:
         if not is_phrase and not from_example:
             slot["word_notes"].add(note_id)
             targets.append(slot["word"])
-        # Толкование и часть речи берём только со словарных карточек:
-        # перевод предложения — не перевод слова, а тег части речи на
-        # фразе относится к её целевому слову, не к каждому.
+        # Gloss and POS come only from dictionary cards: a sentence's
+        # translation isn't the word's translation, and a POS tag on a phrase
+        # refers to its target word, not to every word in it.
         if not is_phrase and not from_example:
             if ru and has_cyrillic(ru):
                 slot["word"]["ru"][ru] += 1
@@ -326,7 +328,7 @@ def rebuild_lemmas(con: sqlite3.Connection) -> int:
         slot["first_seen"] = min(slot["first_seen"], mod)
 
     def vote(slot: dict) -> dict:
-        """Уровень и темы можно взять с фраз, толкование и часть речи — нет."""
+        """Level and topics may come from phrases, gloss and POS may not."""
         base = slot["word"] if slot["word_notes"] else slot["any"]
         return {
             "ru": slot["word"]["ru"],
@@ -355,9 +357,9 @@ def rebuild_lemmas(con: sqlite3.Connection) -> int:
                     / max(1, len(s["word_notes"] or s["notes"])),
                     1,
                 ),
-                # Срывы складываем, а не усредняем: вопрос «сколько раз это
-                # слово забывалось» — про сумму. Усреднение по четырём
-                # карточкам делало из трудного слова спокойное.
+                # Lapses are summed, not averaged: "how many times was this
+                # word forgotten" is about the total. Averaging over four
+                # cards made a hard word look calm.
                 sum(s["lapses"].get(n, 0) for n in (s["word_notes"] or s["notes"])),
                 s["first_seen"],
                 s["last_used"],
@@ -369,12 +371,12 @@ def rebuild_lemmas(con: sqlite3.Connection) -> int:
 
 
 def reconcile_decks(con: sqlite3.Connection, deck_of: dict[int, str]) -> int:
-    """Переписывает колоду у заметок, которые переехали или чью колоду
-    переименовали.
+    """Rewrite the deck of notes that moved or whose deck was
+    renamed.
 
-    Ни то, ни другое не меняет notes.mod, так что инкремент по mod их
-    не видит. А перенос делает сам скилл: заметки создаются в ближайшей
-    существующей колоде и потом двигаются change_deck'ом.
+    Neither changes notes.mod, so the mod-based increment doesn't see them.
+    And the skill moves notes itself: they are created in the nearest
+    existing deck and then moved with change_deck.
     """
     updates = [
         (deck_of[note_id], note_id)
@@ -386,13 +388,13 @@ def reconcile_decks(con: sqlite3.Connection, deck_of: dict[int, str]) -> int:
 
 
 def refresh_stats(con: sqlite3.Connection, stats: dict[int, tuple]) -> int:
-    """Переписывает интервал, повторы и срывы у всех заметок индекса.
+    """Rewrite interval, reviews and lapses for every note in the index.
 
-    Повтор карточки не меняет notes.mod, поэтому инкремент такую заметку
-    не видит и её статистика застывает в момент последней правки текста.
-    На этой коллекции разъезжалась каждая двенадцатая заметка — а вся
-    ценность подсказки «трудные слова» именно в свежести этих чисел.
-    Строк тысячи, один executemany дешевле любой хитрости.
+    A card review doesn't change notes.mod, so the increment doesn't see
+    such a note and its stats freeze at the last text edit. On this
+    collection one in twelve notes drifted — and the whole value of the
+    "hard words" hint is in these numbers being fresh. Thousands of rows;
+    one executemany is cheaper than any trick.
     """
     rows = [
         (ivl, reps, lapses, note_id)
@@ -406,15 +408,15 @@ def refresh_stats(con: sqlite3.Connection, stats: dict[int, tuple]) -> int:
 
 
 def _headword_lemmas(flds: str, lem: Lemmatizer) -> set[str]:
-    """Лемма из первого поля, если оно похоже на заголовок карточки.
+    """The lemma from the first field, if it looks like a card headword.
 
-    Разбор заметки сюда не годится: у Basic он выбирает эстонскую сторону
-    по числу латинских слов, и карточка «hommik | утро Hommik on ilus.»
-    отдаёт заднюю сторону с примером, а заголовок теряется — слово
-    попадало в долг, хотя карточка у него есть.
+    Note parsing doesn't fit here: for Basic it picks the Estonian side by
+    Latin word count, and the card «hommik | утро Hommik on ilus.» yields
+    the back side with the example, losing the headword — the word ended
+    up in the debt even though it has a card.
 
-    Заголовок — короткое поле без кириллицы и без знаков предложения.
-    Два слова разрешаем ради фразовых глаголов ('kaasa elama').
+    A headword is a short field with no Cyrillic and no sentence punctuation.
+    Two words are allowed for phrasal verbs ('kaasa elama').
     """
     head = clean(flds.split(FIELD_SEP)[0]) if flds else ""
     if not head or has_cyrillic(head) or set(head) & set(".?!;:"):
@@ -432,18 +434,18 @@ def scan_outside(
     deck_of: dict[int, str],
     lem: Lemmatizer,
 ) -> int:
-    """Слова, у которых своя карточка есть, но за пределами индекса.
+    """Words that have their own card, but outside the index.
 
-    Ветка A1 из области видимости исключена — она в старых форматах, и
-    её конвертация впереди. Но карточки там настоящие: 149 заметок
-    «трёх форм», 564 typein и словарные Basic вроде «laps | ребёнок».
-    Для vocab_debt это решает всё: без этого списка инструмент уверял,
-    что laps, koer и sõber человек никогда не учил, — а это первые
-    строчки выдачи, ровно те, за которые он и возьмётся.
+    The A1 branch is out of scope — it's in old formats awaiting
+    conversion. But the cards there are real: 149 "three forms" notes,
+    564 typein and dictionary Basic cards like «laps | ребёнок».
+    For vocab_debt this is everything: without this list the tool claimed
+    the learner had never studied laps, koer and sõber — the very first
+    lines of the output, exactly the ones they'd pick up.
 
-    Считаем только заметки-словарные статьи: предложение, где слово
-    просто попалось, карточкой этого слова не делает. Весь проход —
-    полсотни миллисекунд, поэтому обновляем целиком на каждой сборке.
+    Only dictionary-entry notes count: a sentence where the word just
+    appears doesn't make it that word's card. The whole pass takes ~50 ms,
+    so it's refreshed entirely on every build.
     """
     found: set[str] = set()
     for note_id, mid, tags, flds in snap.execute(
@@ -480,9 +482,9 @@ def build(con: sqlite3.Connection, full: bool = False, quiet: bool = False) -> d
         else:
             last_mod = int(_meta_get(con, "last_note_mod") or 0)
 
-        # Колода заметки может смениться без правки самой заметки —
-        # переименованием или переносом карточек. Поэтому область
-        # видимости пересчитываем каждый раз по текущим именам колод.
+        # A note's deck can change without editing the note itself —
+        # by renaming or moving cards. So scope is recomputed every time
+        # from the current deck names.
         deck_of = {
             note_id: decks.get(did, "")
             for note_id, did in note_deck.items()
@@ -493,7 +495,7 @@ def build(con: sqlite3.Connection, full: bool = False, quiet: bool = False) -> d
         }
         known_ids = {row[0] for row in con.execute("select note_id from entry")}
 
-        # Ушли из коллекции или уехали за пределы области видимости.
+        # Gone from the collection or moved out of scope.
         removed = known_ids - scoped_ids
         for note_id in removed:
             con.execute("delete from entry where note_id = ?", (note_id,))
@@ -507,7 +509,7 @@ def build(con: sqlite3.Connection, full: bool = False, quiet: bool = False) -> d
             )
             if row[0] in scoped_ids
         ]
-        # Заметка могла въехать в область видимости, не изменившись сама.
+        # A note may have entered scope without changing itself.
         fresh = scoped_ids - known_ids - {r[0] for r in pending}
         if fresh:
             marks = ",".join("?" * len(fresh))
@@ -542,10 +544,10 @@ def build(con: sqlite3.Connection, full: bool = False, quiet: bool = False) -> d
         _meta_set(con, "built_at", int(time.time()))
         con.commit()
 
-    # Заметки, которых в индексе не было и которые созданы после
-    # прошлой сборки: id заметки Anki — это время её создания в мс.
-    # Заехавшие в область видимости переносом сюда не попадают, как и
-    # первое наполнение индекса: там ново вообще всё.
+    # Notes absent from the index and created after the previous build:
+    # an Anki note id is its creation time in ms. Notes moved into scope
+    # don't count, nor does the first fill of the index: everything is new
+    # there.
     appeared = collections.Counter(
         deck_of.get(note_id, "") or "?"
         for note_id in scoped_ids - known_ids
@@ -566,18 +568,18 @@ def build(con: sqlite3.Connection, full: bool = False, quiet: bool = False) -> d
         "seconds": round(time.time() - started, 2),
     }
     if not quiet:
-        mode = "полная сборка" if full else "инкремент"
+        mode = "full build" if full else "incremental"
         print(
-            f"{mode}: заметок обработано {stored}, пропущено {skipped}, "
-            f"удалено {len(removed)}"
+            f"{mode}: notes processed {stored}, skipped {skipped}, "
+            f"removed {len(removed)}"
         )
-        print(f"  в индексе: {stats['entries']} заметок, {lemmas} лемм")
-        print(f"  со своей карточкой вне области видимости: {outside} слов")
+        print(f"  in index: {stats['entries']} notes, {lemmas} lemmas")
+        print(f"  with own card outside scope: {outside} words")
         if moved:
-            print(f"  сменили колоду (перенос или переименование): {moved}")
+            print(f"  changed deck (move or rename): {moved}")
         print(
-            f"  лемматизатор: {lem.hits} из кэша, {lem.misses} посчитано"
-            f"  ·  {stats['seconds']} с"
+            f"  lemmatizer: {lem.hits} from cache, {lem.misses} computed"
+            f"  ·  {stats['seconds']} s"
         )
     return stats
 
@@ -588,32 +590,32 @@ def is_stale(con: sqlite3.Connection) -> bool:
 
 
 def ensure_fresh(con: sqlite3.Connection, own_write: bool = False) -> bool:
-    """Ленивая досборка. Проверка stat() по трём файлам стоит доли миллисекунды.
+    """Lazy refresh. The stat() check on three files costs a fraction of a ms.
 
-    own_write=True — досборка сразу после своей же записи: появившиеся
-    заметки ожидаемы и жалобы не заслуживают.
+    own_write=True — refresh right after our own write: new notes are
+    expected and don't deserve a warning.
     """
     if not is_stale(con):
-        log.debug("коллекция не менялась — индекс актуален")
+        log.debug("collection unchanged — index up to date")
         return False
     stats = build(con, full=False, quiet=True)
     appeared = stats["appeared"]
-    # Открытый Anki трогает -wal на каждом ответе, так что отпечаток
-    # расходится по десятку раз за сессию, а менять при этом нечего.
-    # Такую досборку держим в DEBUG, иначе она забивает лог.
+    # A running Anki touches -wal on every answer, so the fingerprint
+    # diverges a dozen times per session with nothing to update.
+    # Such refreshes stay at DEBUG, otherwise they flood the log.
     changed = stats["stored"] or stats["moved"] or stats["removed"]
     log.log(
         logging.INFO if changed else logging.DEBUG,
-        "досборка: обновлено %s, новых %s, сменили колоду %s, удалено %s,"
-        " лемм %s, %.0f мс",
+        "refresh: updated %s, new %s, changed deck %s, removed %s,"
+        " lemmas %s, %.0f ms",
         stats["stored"], sum(appeared.values()), stats["moved"],
         stats["removed"], stats["lemmas"], stats["seconds"] * 1000,
     )
     if appeared and not own_write:
-        # Единственный след записи, сделанной не этим сервером: заметки
-        # в колоде есть, а вызова, который их создал, в логе нет.
+        # The only trace of a write not made by this server: the notes are
+        # in the deck, but the call that created them isn't in the log.
         log.info(
-            "  ⚠ заметок появилось мимо сервера: %d · %s",
+            "  ⚠ notes appeared bypassing the server: %d · %s",
             sum(appeared.values()),
             ", ".join(f"{deck} ×{n}" for deck, n in appeared.most_common(5)),
         )
@@ -625,22 +627,22 @@ def print_stats(con: sqlite3.Connection) -> None:
     entries = q("select count(*) from entry")[0][0]
     lemmas = q("select count(*) from lemma")[0][0]
     single = q("select count(*) from lemma where n_word_notes > 0")[0][0]
-    print(f"заметок: {entries}   лемм: {lemmas}   из них однословных: {single}")
-    print(f"коллекция: {_meta_get(con, 'collection')}")
-    print("\nпо уровням:")
+    print(f"notes: {entries}   lemmas: {lemmas}   single-word: {single}")
+    print(f"collection: {_meta_get(con, 'collection')}")
+    print("\nby level:")
     for level, n in q(
         "select coalesce(level,'—'), count(*) from lemma group by 1 order by 2 desc"
     ):
         print(f"  {level:6} {n}")
-    print("\nпо частям речи:")
+    print("\nby part of speech:")
     for pos, n in q(
         "select coalesce(pos,'—'), count(*) from lemma group by 1 order by 2 desc"
     ):
         print(f"  {pos:16} {n}")
-    print("\nпо типам заметок:")
+    print("\nby note type:")
     for nt, n in q("select notetype, count(*) from entry group by 1 order by 2 desc"):
         print(f"  {nt:34} {n}")
-    print("\nтоп-20 тем:")
+    print("\ntop 20 topics:")
     counter: collections.Counter = collections.Counter()
     for (topics,) in q("select topics from lemma"):
         counter.update(json.loads(topics))
@@ -650,12 +652,12 @@ def print_stats(con: sqlite3.Connection) -> None:
 
 def main() -> None:
     ap = argparse.ArgumentParser(prog="anki_vocab.index")
-    ap.add_argument("--rebuild", action="store_true", help="полная пересборка")
-    ap.add_argument("--refresh", action="store_true", help="инкрементальная досборка")
-    ap.add_argument("--stats", action="store_true", help="показать сводку")
+    ap.add_argument("--rebuild", action="store_true", help="full rebuild")
+    ap.add_argument("--refresh", action="store_true", help="incremental refresh")
+    ap.add_argument("--stats", action="store_true", help="show summary")
     ap.add_argument("--prune-cache", action="store_true",
-                    help="выбросить из кэша лемм слова, которых нет ни в одной "
-                         "индексируемой заметке")
+                    help="drop words from the lemma cache that appear in no "
+                         "indexed note")
     args = ap.parse_args()
 
     con = open_index()
@@ -667,14 +669,14 @@ def main() -> None:
             )
             con.commit()
             after = con.execute("select count(*) from lemma_cache").fetchone()[0]
-            print(f"кэш лемм: было {before}, стало {after}, выброшено {before - after}")
+            print(f"lemma cache: was {before}, now {after}, dropped {before - after}")
         if args.rebuild:
             build(con, full=True)
         elif args.refresh:
             if is_stale(con):
                 build(con, full=False)
             else:
-                print("коллекция не менялась — индекс актуален")
+                print("collection unchanged — index up to date")
         if args.stats or not (args.rebuild or args.refresh or args.prune_cache):
             print_stats(con)
     finally:

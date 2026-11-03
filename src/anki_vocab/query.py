@@ -1,10 +1,10 @@
-"""Логика инструментов: проверка слов, палитра, покрытие текста.
+"""Tool logic: word checks, palette, text coverage.
 
-Два яруса словаря. Палитра — первые поля словарных карточек (колода
-01. sõnad), из них Claude сочиняет. Второй ярус — всё остальное, что
-человек видел: другие формы с карточек, слова из примеров и дриллов.
-Сочинять из них не предлагаем, но известными считаем, иначе проверка
-ругалась бы на слова из его же карточек.
+Two vocabulary tiers. The palette is the first fields of dictionary cards
+(deck 01. sõnad); Claude composes from it. The second tier is everything
+else the learner has seen: other forms from cards, words from examples
+and drills. We don't suggest composing from them, but count them as known,
+otherwise the check would complain about words from the learner's own cards.
 """
 from __future__ import annotations
 
@@ -30,19 +30,19 @@ from .parse import words
 
 KNOWN, SEEN, UNKNOWN = "known", "seen", "unknown"
 
-# Типы заметок словарной карточки: три формы слова в одном поле-заголовке.
+# Note types of a dictionary card: three word forms in one headword field.
 WORD_CARD_NOTETYPES = ("Estonian 3 Forms", "Estonian Word Forms")
 
 
 def _tag_words(tags: list[str] | set[str]) -> set[str]:
-    """Тег темы и слова из него.
+    """A topic tag and the words in it.
 
-    Соглашение об именовании со временем поменялось: старые темы помечены
-    одним тегом с подчёркиваниями ('tule_mulle_külla', 'kodused_tööd'),
-    новые — словами ('elu', 'liikumine', 'on'). Скилл считает теги из
-    имени колоды по второму правилу, поэтому у старых тем совпадений не
-    было вовсе и группа «по теме» молча приезжала пустой. Сравниваем
-    по словам, и обе схемы сходятся.
+    The naming convention changed over time: old topics are tagged with
+    one underscored tag ('tule_mulle_külla', 'kodused_tööd'), new ones
+    with words ('elu', 'liikumine', 'on'). The skill derives tags from the
+    deck name by the second rule, so old topics never matched and the
+    "by topic" group silently came back empty. Comparing by word makes
+    both schemes agree.
     """
     out = set()
     for tag in tags:
@@ -53,25 +53,25 @@ def _tag_words(tags: list[str] | set[str]) -> set[str]:
     return out
 MARK = {KNOWN: "✓", SEEN: "~", UNKNOWN: "✗"}
 
-# Откуда в теме взялось слово. Слот заметки честнее колоды: старые темы
-# лежат в других форматах, а Form1/2/3 — это карточка трёх форм всегда.
+# Where a word in a topic came from. The note slot is more honest than the
+# deck: old topics use other formats, while Form1/2/3 is always a three-forms card.
 SLOT_MARK = {
-    # карточка форм; Form4 (партитив мн. ч.) появилась позже остальных
+    # forms card; Form4 (partitive plural) was added later than the others
     "Form1": "3F", "Form2": "3F", "Form3": "3F", "Form4": "3F",
-    "Answer": "ty",                               # typein, одна форма
-    "example": "ex",                              # только внутри примера
+    "Answer": "ty",                               # typein, one form
+    "example": "ex",                              # only inside an example
 }
 MARK_ORDER = ["3F", "ty", "other", "ex"]
 
-# Потолок страницы долга. Смысл проекта — экономия контекста, а инструмент
-# отдаёт limit наружу: 400 слов — это 8k токенов одним ответом.
+# Debt page cap. The project's point is saving context, and the tool exposes
+# limit: 400 words is 8k tokens in a single response.
 DEBT_PAGE_MAX = 50
 
 
 @dataclass
 class Palette:
-    """Выдача vocab_pool. Полей уже пять, и позиционный кортеж на месте
-    вызова читался как (a, b, _, _)."""
+    """vocab_pool output. Five fields already, and a positional tuple at
+    the call site read as (a, b, _, _)."""
 
     topical: list[str]
     core: list[str]
@@ -82,49 +82,49 @@ class Palette:
 
 @dataclass
 class Repeat:
-    """Слово, на которое примеры опираются слишком часто."""
+    """A word the examples lean on too often."""
 
     lemma: str
-    in_batch: int          # в скольких предложениях этой пачки
-    in_topic: int = 0      # плюс в скольких уже записанных в тему
-    own: bool = False      # слово самой темы: у него здесь своя карточка
-    # Пачка построена на этом слове здесь и сейчас — это переписывают.
-    # Иначе слово просто давно заезжено в теме, и это пожелание.
+    in_batch: int          # in how many sentences of this batch
+    in_topic: int = 0      # plus how many already written to the topic
+    own: bool = False      # the topic's own word: it has its own card here
+    # The batch is built on this word right here and now — rewrite it.
+    # Otherwise the word is just long overused in the topic: a suggestion.
     crowded: bool = False
 
 
 @dataclass
 class Novel:
-    """Новые слова одного предложения, парами (лемма, форма в тексте)."""
+    """New words of one sentence, as (lemma, form in text) pairs."""
 
     unknown: list[tuple[str, str]] = field(default_factory=list)
     half: list[tuple[str, str]] = field(default_factory=list)
 
 
 class Token(NamedTuple):
-    """Знаменательное слово предложения после разбора."""
+    """A content word of a sentence after parsing."""
 
     form: str
     status: str
     lemma: str
     times: int
-    # Нет в словаре Vabamorf: скорее опечатка, чем новое слово.
+    # Not in Vabamorf's dictionary: more likely a typo than a new word.
     typo: bool = False
 
 
 class Check(NamedTuple):
-    """Вердикт по одному предложению."""
+    """Verdict for one sentence."""
 
     pct: int
-    new: list[str]        # незнакомые леммы, опечатки сюда не входят
-    content: list[str]    # все знаменательные леммы — для однообразия
-    typos: list[str]      # формы, которых нет в словаре
+    new: list[str]        # unknown lemmas, typos excluded
+    content: list[str]    # all content lemmas — for monotony
+    typos: list[str]      # forms not in the dictionary
 
 
 @dataclass
 class Debt:
-    """Слово, которое человек читает в своих же примерах, но карточки
-    ему так и не завёл."""
+    """A word the learner reads in their own examples but never made
+    a card for."""
 
     word: str
     times: int
@@ -133,10 +133,10 @@ class Debt:
 
 @dataclass
 class DebtPage:
-    """Страница долга вместе со смещением, с которого её печатать.
+    """A debt page together with the offset to print it from.
 
-    Смещение отдаём наружу, а не берём у вызывающего: границы вправляются
-    внутри, и с сырым offset=-5 нумерация уехала бы в «#-4».
+    The offset is returned rather than taken from the caller: bounds are
+    clamped inside, and with a raw offset=-5 numbering would drift to "#-4".
     """
 
     items: list[Debt]
@@ -157,7 +157,7 @@ class Hit:
     forms: tuple[str, ...] = ()
     decks: tuple[str, ...] = ()
     times: int = 0
-    # Только у '~': где человек слово видел и говорил ли он, что знает его.
+    # Only for '~': where the learner saw the word and whether they said they know it.
     example: str | None = None
     marked_known: bool = False
 
@@ -167,7 +167,7 @@ class Vocab:
         self.con = con
         self.lem = Lemmatizer(con)
 
-    # --- поиск -----------------------------------------------------------
+    # --- lookup -----------------------------------------------------------
     def _row(self, lemma: str) -> Hit | None:
         row = self.con.execute(
             "select lemma, ru, level, pos, topics, forms, n_word_notes, n_notes"
@@ -187,15 +187,16 @@ class Vocab:
         )
 
     def _where(self, lemma: str) -> list[str]:
-        """Тема плюс пометки, какого рода запись в ней лежит.
+        """Topic plus marks for what kind of entry lives there.
 
-        Одной темы мало: «слово уже в 09. Vaba aeg» может значить и
-        полноценную карточку трёх форм, и случайное попадание в чужой
-        пример. Решения это разные, а по имени темы их не различить.
+        The topic alone isn't enough: "word already in 09. Vaba aeg" may mean
+        a full three-forms card or an incidental hit in someone else's
+        example. Those are different decisions, and the topic name can't
+        tell them apart.
         """
-        # Держим сильнейшую пометку темы, а не все: у слова с карточкой
-        # трёх форм почти всегда есть и typein, и попадания в примеры —
-        # перечислять их значит платить токенами за то, что и так ясно.
+        # Keep the strongest mark per topic, not all: a word with a three-forms
+        # card almost always has typein and example hits too — listing them
+        # means paying tokens for what's already clear.
         best: dict[str, int] = {}
         for deck, slot in self.con.execute(
             "select distinct e.deck, f.slot from form f"
@@ -206,33 +207,33 @@ class Vocab:
             topic = topic_of(deck)
             rank = MARK_ORDER.index(SLOT_MARK.get(slot, "other"))
             best[topic] = min(rank, best.get(topic, len(MARK_ORDER)))
-        # Тема с карточкой трёх форм — главный ответ на вопрос «дубль ли
-        # это», и обрезка списка не должна её съесть.
+        # A topic with a three-forms card is the main answer to "is this a
+        # duplicate", and list truncation must not eat it.
         return [
             f"{topic} {MARK_ORDER[rank]}"
             for topic, rank in sorted(best.items(), key=lambda kv: kv[1])
         ]
 
     def lookup(self, word: str, hint: str | None = None) -> Hit:
-        """Точная форма → лемма формы → лемма по морфологии.
+        """Exact form → the form's lemma → lemma by morphology.
 
-        hint — лемма, снятая в контексте предложения: она надёжнее разбора
-        слова по одному и идёт сразу после уже известных форм."""
+        hint is the lemma disambiguated in the sentence's context: more
+        reliable than parsing the word alone, tried right after known forms."""
         raw = word.strip().lower()
         if not raw:
             return Hit(query=word, status=UNKNOWN)
 
-        if " " in raw:  # фразовый глагол — самостоятельная единица
+        if " " in raw:  # a phrasal verb is a unit of its own
             hit = self._row(raw)
             if hit:
                 hit.query = word
                 return hit
             return Hit(query=word, status=UNKNOWN)
 
-        # Одна форма может висеть на разных леммах: внутри предложения
-        # слово разбирается без тега части речи, и 'salli' уходит в
-        # глагол sallima, хотя словарная карточка — существительное
-        # «шарф». Впереди идёт лемма со словарными карточками.
+        # One form may hang on several lemmas: inside a sentence a word is
+        # parsed without a POS tag, and 'salli' goes to the verb sallima,
+        # while the dictionary card is the noun "scarf". The lemma with
+        # dictionary cards comes first.
         candidates = [
             lemma for (lemma,) in self.con.execute(
                 "select f.lemma from form f"
@@ -256,11 +257,12 @@ class Vocab:
         return Hit(query=word, status=UNKNOWN)
 
     def check(self, words: list[str]) -> list[Hit]:
-        """lookup для vocab_check, плюс контекст для слов с '~'.
+        """lookup for vocab_check, plus context for '~' words.
 
-        '~' — не дубль: карточки у слова нет, оно только мелькало в чужих
-        примерах. Решает человек — знает он его или будет учить, — и
-        решает по тому, где его видел: голое слово ничего не напоминает.
+        '~' isn't a duplicate: the word has no card, it only flashed by in
+        other cards' examples. The learner decides — do they know it or
+        will they learn it — and decides by where they saw it: a bare word
+        recalls nothing.
         """
         hits = [self.lookup(w) for w in words]
         for hit in hits:
@@ -271,7 +273,7 @@ class Vocab:
                 ).fetchone())
         return hits
 
-    # --- палитра ---------------------------------------------------------
+    # --- palette ----------------------------------------------------------
     def pool(
         self,
         level: str | None = None,
@@ -283,82 +285,82 @@ class Vocab:
         weak_hint: int = 30,
         mature_ivl: int = 21,
     ) -> Palette:
-        """Слова по теме, ядро, и две подсказки — забытые и залежавшиеся.
+        """Topic words, the core, and two hints — forgotten and stale.
 
-        Палитра — первые поля словарных карточек, как их написал человек:
-        номинатив у существительных, ma-инфинитив у глаголов. Через
-        морфологию их не гоняем. Карточка и так содержит словарную форму,
-        а анализатор без контекста умеет только испортить её: 'Lisaks'
-        превращался в 'lisa', 'Kindad' — в 'kinnas', карточка 'Harjutama'
-        заводила вторую лемму harjuma (привыкать — другой глагол), а
-        фразовый глагол растраивался на 'kaasa elama', 'kaasa elada' и
-        'elan kaasa'. Морфология остаётся там, где она незаменима, —
-        в lookup и check_sentence, которые разбирают произвольный текст.
+        The palette is the first fields of dictionary cards, as the learner
+        wrote them: nominative for nouns, ma-infinitive for verbs. They're
+        not run through morphology. The card already holds the dictionary
+        form, and a context-free analyzer can only spoil it: 'Lisaks'
+        turned into 'lisa', 'Kindad' into 'kinnas', the card 'Harjutama'
+        spawned a second lemma harjuma (to get used to — a different verb),
+        and a phrasal verb tripled into 'kaasa elama', 'kaasa elada' and
+        'elan kaasa'. Morphology stays where it's irreplaceable — in lookup
+        and check_sentence, which parse arbitrary text.
 
-        Обратная сторона: слова, встреченные только в предложениях и
-        грамматических дриллах (jooma, aitama, helistama), в палитру не
-        попадают — у них нет словарной карточки. Знакомыми они при этом
-        остаются: покрытие считается по всему индексу.
+        The flip side: words seen only in sentences and grammar drills
+        (jooma, aitama, helistama) don't enter the palette — they have no
+        dictionary card. They still count as known: coverage is computed
+        over the whole index.
 
-        Предела по умолчанию нет. Любое число здесь прячет часть словаря,
-        причём всегда одну и ту же — а словарь растёт на ~240 слов в месяц,
-        так что любая константа устаревает за недели. Если предел всё же
-        передан и он сработал, отброшенное число возвращается наружу,
-        чтобы усечение не было молчаливым.
+        There's no default limit. Any number here hides part of the
+        vocabulary, always the same part — and the vocabulary grows by
+        ~240 words a month, so any constant goes stale within weeks. If a
+        limit is passed and kicks in, the dropped count is returned so the
+        truncation isn't silent.
 
-        Фильтр по теме сам по себе не работает: медиана — 5 слов на тему,
-        а у новой темы совпадений нет вовсе, и палитра выходила пустой.
-        Поэтому к тематическим словам добавляем ядро — самые частотные
-        слова этого уровня независимо от темы. Из ядра и строится
-        обычная фраза, тема даёт существительные.
+        The topic filter alone doesn't work: the median is 5 words per
+        topic, a new topic has no matches at all, and the palette came out
+        empty. So topic words are joined by the core — the most frequent
+        words of the level regardless of topic. The core builds an ordinary
+        sentence; the topic supplies the nouns.
 
-        Дальше идут две подсказки, и они отвечают на разные вопросы.
-        «Давно не использовал» — ходовые слова, которые давно не попадали
-        в новые карточки; это про однообразие примеров. «Трудные» —
-        слова, которые человек на повторах забывал и до зрелого интервала
-        так и не довёл; это про его память, и новое предложение с таким
-        словом даёт лишнюю встречу ровно там, где она нужна.
+        Then come two hints, answering different questions. "Not used in a
+        while" — common words that haven't appeared in new cards for a long
+        time; that's about example monotony. "Hard" — words the learner kept
+        forgetting on reviews and never brought to a mature interval; that's
+        about their memory, and a new sentence with such a word adds an
+        encounter exactly where it's needed.
 
-        Не исключаем ничего — просто показываем, чем разбавить. Исключать
-        «свежие» слова нельзя: в этой корзине сидят olema, meeldima,
-        tegema, без которых фразу не построишь.
+        Nothing is excluded — we just show what to dilute with. Excluding
+        "recent" words won't do: that bucket holds olema, meeldima, tegema,
+        without which no sentence can be built.
         """
         marks = ",".join("?" * len(WORD_CARD_NOTETYPES))
         sql = [f"select headword, topics from entry where notetype in ({marks})"]
         args: list = list(WORD_CARD_NOTETYPES)
         if level:
-            # Карточка без тега уровня — всё равно выученное слово, и
-            # прятать её нельзя: в старой колоде «03. minu kodu» без тега
-            # лежит вся бытовая лексика (laud, kapp, köök, lamp), а это
-            # ровно те существительные, из которых строится фраза A2.
+            # A card without a level tag is still a learned word and must
+            # not be hidden: the old deck «03. minu kodu» has no tags and
+            # holds all the household vocabulary (laud, kapp, köök, lamp) —
+            # exactly the nouns an A2 sentence is built from.
             sql.append("and (level = ? or level is null)")
             args.append(level.lower())
         if pos:
             sql.append("and pos = ?")
             args.append(pos)
-        # lower() в SQLite знает только латиницу и оставил бы 'Ämber'
-        # отдельным словом рядом с 'ämber' — приводим регистр в Python.
+        # SQLite's lower() only knows ASCII and would keep 'Ämber' as a
+        # separate word next to 'ämber' — case is folded in Python.
         seen: dict[str, set[str]] = {}
         for headword, blob in self.con.execute(" ".join(sql), args):
             word = headword.strip().lower()
             if word:
                 seen.setdefault(word, set()).update(_tag_words(json.loads(blob)))
 
-        # Ходовость и «когда попадалось в последний раз» берём из индекса
-        # лемм по совпадению строки. Для 96% слов карточки лемма совпадает
-        # с первым полем; остальным сигнал просто нулевой, и они уезжают
-        # в конец ранжирования — на состав палитры это не влияет.
+        # Frequency and "last seen" come from the lemma index by string match.
+        # For 96% of words the card's lemma equals the first field; for the
+        # rest the signal is just zero and they sink to the end of the
+        # ranking — it doesn't affect the palette's contents.
         #
-        # Ранжируем по ходовости: n_notes — сколько раз слово встречается
-        # во всей коллекции, включая примеры внутри предложений. Это и есть
-        # «насколько слово рабочее». Интервал повторения разбивает ничьи.
+        # Rank by frequency: n_notes is how often the word occurs across the
+        # whole collection, including examples inside sentences. That's
+        # "how much of a working word it is". The review interval breaks ties.
         #
-        # Два тупика, которые пришлось пройти. Число карточек не годится:
-        # у 457 слов их ровно четыре, и сортировка сваливалась в алфавит —
-        # слова на ä и õ не попадали в выдачу никогда. Чистый интервал тоже
-        # не годится: наверх всплывают порядковые числительные вроде
-        # «üheksasajas» — они лёгкие, поэтому интервал огромный, но фразу
-        # из них не построишь.
+        # Two dead ends we went through. Card count doesn't work: 457 words
+        # have exactly four, and sorting fell back to alphabetical — words
+        # starting with ä and õ never made the output. Pure interval doesn't
+        # work either: ordinal numerals like «üheksasajas» float to the top —
+        # they're easy, so the interval is huge, but you can't build a
+        # sentence from them.
         blank = (0, 0.0, 0, None)
         meta = {
             lemma: (n_notes, strength, lapses, last_used)
@@ -395,17 +397,17 @@ class Vocab:
     def _weak(
         self, ranked: list[str], meta: dict, want: int, mature_ivl: int
     ) -> list[str]:
-        """Слова, которые человек забывал и до зрелого интервала не довёл.
+        """Words the learner kept forgetting and never got to a mature interval.
 
-        Срыв без интервала бесполезен: слово можно было ронять полгода
-        назад и с тех пор выучить намертво (ahi — 29 срывов и интервал
-        103 дня). Порог зрелости берём у самого Anki — 21 день.
+        Lapses without the interval are useless: a word may have been
+        dropped half a year ago and learned solidly since (ahi — 29 lapses
+        and a 103-day interval). The maturity threshold is Anki's own: 21 days.
 
-        Порядок — по тяжести, самое проблемное первым: подсказка нужна,
-        чтобы с неё брали сверху. Алфавит здесь потерял бы весь сигнал.
+        Ordered by severity, the most problematic first: the hint is meant
+        to be taken from the top. Alphabetical order would lose all signal.
 
-        Служебные слова отсеиваем на выходе, а не по всему словарю:
-        разбор стоит вызова морфологии, а нужно из него слов тридцать.
+        Function words are filtered on output, not across the vocabulary:
+        parsing costs a morphology call, and only ~30 words are needed.
         """
         candidates = sorted(
             (w for w in ranked if meta.get(w, (0, 0.0, 0, None))[2] >= 1
@@ -420,11 +422,11 @@ class Vocab:
                 out.append(word)
         return out
 
-    # --- покрытие --------------------------------------------------------
+    # --- coverage ---------------------------------------------------------
     def _is_function(self, word: str) -> bool:
-        """Служебное слово. Список закрывает частотные формы olema и ei,
-        а коды Vabamorf — послелоги (K) и союзы (J), которых в словаре
-        и не должно быть: это грамматика, а не лексика."""
+        """A function word. The list covers frequent forms of olema and ei,
+        and the Vabamorf codes cover postpositions (K) and conjunctions (J),
+        which shouldn't be in the vocabulary anyway: that's grammar, not lexis."""
         analyses = self.lem.analyses(word)
         if {lem for lem, _ in analyses} & FUNCTION_WORDS or word in FUNCTION_WORDS:
             return True
@@ -432,12 +434,12 @@ class Vocab:
         return bool(codes) and codes <= {"K", "J"}
 
     def goal(self, targets) -> set[str]:
-        """Целевые слова вместе с их леммами.
+        """Target words together with their lemmas.
 
-        Модель передаёт слово так, как учит его: 'kaerahelbed', 'botased'.
-        В тексте оно стоит в другой форме, а сравнение идёт по лемме
-        (kaerahelves, botas), и без этого шага целевое слово выходило
-        новым и попадало в однообразие."""
+        The model passes a word the way it's taught: 'kaerahelbed', 'botased'.
+        In the text it stands in another form, and comparison goes by lemma
+        (kaerahelves, botas); without this step the target word came out
+        new and ended up in the monotony check."""
         out: set[str] = set()
         for target in targets or ():
             low = target.strip().lower()
@@ -447,19 +449,19 @@ class Vocab:
         return out
 
     def _scan(self, text: str, targets: set[str]) -> list[Token]:
-        """Знаменательные слова предложения.
+        """Content words of a sentence.
 
-        Форму держим рядом с леммой не для красоты: промахи морфологии
-        видно только в паре. 'soojat' — партитив от soe, но Vabamorf
-        отдаёт его самостоятельной леммой, и в отчёте это выглядит
-        честным новым словом. С формой рядом сразу ясно, что случилось.
+        The form is kept next to the lemma for a reason: morphology misses
+        show only in the pair. 'soojat' is the partitive of soe, but Vabamorf
+        returns it as a lemma of its own, and in the report it looks like an
+        honest new word. With the form alongside, it's clear what happened.
 
-        Имена собственные пропускаем: 'Lätist' не новое слово, а Латвия.
-        Видно это только по регистру, поэтому разбор — по исходному
-        тексту, до приведения к нижнему.
+        Proper names are skipped: 'Lätist' isn't a new word, it's Latvia.
+        That only shows by case, so parsing runs on the original text,
+        before lowercasing.
 
-        targets — целевые слова карточек: они новые по определению
-        и бюджет не тратят.
+        targets are the cards' target words: new by definition, and they
+        don't spend the budget.
         """
         out: list[Token] = []
         tokens = words(text)
@@ -470,23 +472,24 @@ class Vocab:
             if targets and ({low, lemma} | self.lem.lemmas(low)) & targets:
                 continue
             hit = self.lookup(low, hint=lemma)
-            # Индекс опечатку не исправляет: 'söi' однажды попало в пример
-            # и стало «знакомым», и дальше проходило молча. Не трогаем
-            # только слово со своей карточкой — 'baleriinad' или 'wc-pott'
-            # словарь не знает, но человек учит их сознательно.
+            # The index doesn't fix a typo: 'söi' once got into an example,
+            # became "known" and then passed silently. Only a word with its
+            # own card is left alone — the dictionary doesn't know
+            # 'baleriinad' or 'wc-pott', but the learner studies them on purpose.
             typo = hit.status != KNOWN and not self.lem.in_dictionary(low)
             out.append(Token(low, hit.status, hit.lemma or lemma, hit.times, typo))
         return out
 
     def check_sentence(self, text: str, targets: set[str] | None = None) -> Check:
-        """Покрытие, незнакомые леммы, знаменательные леммы и опечатки.
+        """Coverage, unknown lemmas, content lemmas and typos.
 
-        Знаменательные идут именно леммами, а не формами из текста: по
-        ним считается однообразие, и 'panin'/'pani'/'panime' должны
-        сойтись в одно слово, иначе повтор не виден.
+        Content words are returned as lemmas, not forms from the text:
+        monotony is counted by them, and 'panin'/'pani'/'panime' must
+        collapse into one word, otherwise the repeat isn't visible.
 
-        Опечатка в покрытие не идёт как знакомое слово, но и новым словом
-        её не называем: это ошибка в тексте, её исправляют, а не учат.
+        A typo doesn't count toward coverage as a known word, but isn't
+        called a new word either: it's an error in the text, to be fixed,
+        not learned.
         """
         scan = self._scan(text, targets or set())
         if not scan:
@@ -502,13 +505,13 @@ class Vocab:
             list(dict.fromkeys(t.form for t in scan if t.typo)),
         )
 
-    # --- однообразие ------------------------------------------------------
+    # --- monotony ---------------------------------------------------------
     def topic_sentence_use(self, topic: str) -> dict[str, int]:
-        """Сколько уже записанных в тему предложений содержит каждую лемму.
+        """How many sentences already written to the topic contain each lemma.
 
-        Предложения темы — это примеры словарных карточек (slot 'example')
-        и ответы колоды 03 (is_phrase). Ответ колоды 02 — одна словоформа,
-        не предложение, и в счёт не идёт.
+        Topic sentences are dictionary-card examples (slot 'example') and
+        deck-03 answers (is_phrase). A deck-02 answer is a single word form,
+        not a sentence, and doesn't count.
         """
         decks = topic_decks(self.con, topic)
         if not decks:
@@ -524,11 +527,11 @@ class Vocab:
         return dict(rows)
 
     def topic_headwords(self, topic: str) -> set[str]:
-        """Слова, которым тема сама и учит.
+        """The words the topic itself teaches.
 
-        Их частота — свойство темы, а не однообразия: 'pood' в теме
-        «12. Poes» обязан попадаться часто, и ругаться на него значит
-        приучить модель не читать эту строку вовсе.
+        Their frequency is a property of the topic, not monotony: 'pood' in
+        topic «12. Poes» must show up often, and complaining about it would
+        teach the model to ignore this line altogether.
         """
         decks = topic_decks(self.con, topic)
         if not decks:
@@ -549,18 +552,18 @@ class Vocab:
         topic: str | None = None,
         targets: set[str] | None = None,
     ) -> list[Repeat]:
-        """Слова, которые пачка предложений эксплуатирует.
+        """Words a batch of sentences overuses.
 
-        Два независимых повода пожаловаться. Первый — доля внутри самой
-        пачки: она ловит вызов, где три предложения из шести построены
-        на одном глаголе. Второй — вершина рейтинга темы: она ловит то,
-        что первому не видно, — по два-три повтора за вызов, которые за
-        несколько заходов и дают десять panema.
+        Two independent reasons to complain. The first is the share within
+        the batch itself: it catches a call where three of six sentences are
+        built on one verb. The second is the top of the topic's ranking: it
+        catches what the first can't see — two or three repeats per call
+        that over several rounds add up to ten panema.
 
-        Слова темы из второго повода исключены: 'pood' в теме «12. Poes»
-        обязан попадаться часто, и жалоба на него научила бы только не
-        читать эту строку. Из первого не исключены — тема учит слову,
-        а не разрешает построить на нём всю подборку.
+        Topic words are excluded from the second reason: 'pood' in «12. Poes»
+        must show up often, and complaining would only teach ignoring this
+        line. They aren't excluded from the first — the topic teaches the
+        word, it doesn't license building the whole set on it.
         """
         if not batch:
             return []
@@ -579,14 +582,14 @@ class Vocab:
         for lemma, n in counts.items():
             if n >= floor or lemma in hot:
                 out.append(Repeat(lemma, n, prior.get(lemma, 0), lemma in own, n >= floor))
-        # Обрезает format_repeats, и по каждой строке отдельно: пять
-        # «перепиши» не должны съесть место у «учти на будущее».
+        # format_repeats truncates, per line: five "rewrite" items must not
+        # eat the room of "keep in mind".
         out.sort(key=lambda r: (not r.crowded, -r.in_batch, -r.in_topic, r.lemma))
         return out
 
     @staticmethod
     def _hot(usage: dict[str, int], skip: set[str]) -> set[str]:
-        """Вершина рейтинга темы — слова, которых в ней уже слишком много."""
+        """Top of the topic's ranking — words it already has too many of."""
         ranked = sorted(
             ((n, w) for w, n in usage.items()
              if n >= REPEAT_IN_TOPIC and w not in skip),
@@ -595,24 +598,25 @@ class Vocab:
         return {w for _n, w in ranked[:REPEAT_TOP]}
 
     def novel(self, text: str, taught: set[str] | None = None) -> Novel:
-        """Новое в предложении — материал дозы колоды 03.
+        """What's new in a sentence — input for the deck-03 dose.
 
-        Отличается от check_sentence тем, что редкие '~'-слова не
-        проходят молча. Там слово, мелькнувшее в чужом примере, честно
-        считается известным — иначе проверка ругалась бы на словах с
-        его же карточек. Для дозы это другой вопрос: одна встреча в
-        чужом примере запоминанию не равна, и такое слово тоже растит
-        словарь, просто мягче полностью незнакомого.
+        Differs from check_sentence in that rare '~' words don't pass
+        silently. There, a word glimpsed in another card's example honestly
+        counts as known — otherwise the check would complain about words
+        from the learner's own cards. For the dose it's a different
+        question: one encounter in someone else's example isn't the same as
+        learning it, and such a word also grows the vocabulary, just more
+        gently than a completely unknown one.
 
-        Порог HALF_KNOWN_MAX обязателен: ветка A1 в индекс не входит,
-        поэтому без него в «полузнакомые» уезжали ema, koer и täna —
-        самые знакомые слова, какие вообще есть.
+        The HALF_KNOWN_MAX threshold is essential: the A1 branch isn't in the
+        index, so without it ema, koer and täna ended up "half-known" —
+        the most familiar words there are.
         """
         unknown: dict[str, str] = {}
         half: dict[str, str] = {}
         for t in self._scan(text, taught or set()):
-            # Опечатка дозой не считается: 'mureled' вместо 'murelid'
-            # засчитывалось новым словом темы.
+            # A typo doesn't count toward the dose: 'mureled' for 'murelid'
+            # was counted as a new topic word.
             if t.status == UNKNOWN and not t.typo:
                 unknown.setdefault(t.lemma, t.form)
             elif t.status == SEEN and t.times <= HALF_KNOWN_MAX:
@@ -623,9 +627,9 @@ class Vocab:
         )
 
 
-    # --- доза по всему заполнению темы -----------------------------------
+    # --- dose across the whole topic fill ---------------------------------
     def dose_history(self, topic_key: str) -> tuple[int, list[str]]:
-        """Сколько слов и какие новые слова уже ушли в тему за окно."""
+        """How many words, and which new words, already went into the topic within the window."""
         since = int(time.time() - DOSE_WINDOW_HOURS * 3600)
         words_total, new = 0, []
         for n, blob in self.con.execute(
@@ -643,12 +647,12 @@ class Vocab:
         )
         self.con.commit()
 
-    # --- долг: слова без своей карточки -----------------------------------
+    # --- debt: words without their own card -------------------------------
     def _frozen_case(self, lemma: str) -> bool:
-        """Наречие, застывшее из падежа слова, у которого карточка есть:
-        'lukku' при карточке lukk. Это не долг, а форма знакомого слова,
-        и контекст его не исправляет — Vabamorf и в предложении считает
-        'lukku' наречием."""
+        """An adverb frozen from a case of a word that has a card: 'lukku'
+        with a card for lukk. That's not debt but a form of a known word,
+        and context doesn't fix it — Vabamorf treats 'lukku' as an adverb
+        even in a sentence."""
         if not {code for _, code in self.lem.analyses(lemma)} <= {"D", "K"}:
             return False
         others = {lem for lem, _ in self.lem.variants(lemma)} - {lemma}
@@ -661,9 +665,9 @@ class Vocab:
         ).fetchone())
 
     def _sample(self, lemma: str, cap: int = 80) -> str | None:
-        """Самое короткое предложение, где слово попадалось. Голое слово
-        без контекста ничего не напоминает — а именно узнавание («а, вот
-        оно откуда») и решает, брать его в тему или нет."""
+        """The shortest sentence where the word appeared. A bare word without
+        context recalls nothing — and it's recognition ("ah, that's where it's
+        from") that decides whether to take it into a topic."""
         best: str | None = None
         for form, examples, et_raw, is_phrase in self.con.execute(
             "select f.form, e.examples, e.et_raw, e.is_phrase from form f"
@@ -683,14 +687,14 @@ class Vocab:
         return best
 
     def debt_skip(self, words: list[str], undo: bool = False) -> tuple[int, int]:
-        """«Это я знаю» — чтобы слово больше не предлагалось.
+        """ "I know this" — so the word isn't suggested again.
 
-        Иначе в новом чате приезжает ровно тот же десяток: инструмент
-        читает индекс, индекс собран из Anki, а ответа человека там нет
-        и взяться ему неоткуда.
+        Otherwise every new chat brings the same dozen: the tool reads the
+        index, the index is built from Anki, and the learner's answer isn't
+        there and can't come from anywhere.
 
-        Слово приводим к лемме: человек отвечает тем словом, которое
-        увидел, но ответить он может и словоформой из примера.
+        The word is reduced to its lemma: the learner answers with the word
+        they saw, but it may be an inflected form from an example.
         """
         keys = set()
         for word in words:
@@ -720,34 +724,35 @@ class Vocab:
         return len(keys), total
 
     def debt(self, limit: int = 10, offset: int = 0) -> DebtPage:
-        """Слова, встреченные только внутри чужих предложений.
+        """Words met only inside other cards' sentences.
 
-        Человек читает их на каждом повторе, но карточки у них нет —
-        значит, ни форм, ни перевода он не учил. Это готовый список
-        «чего добавить», причём из собственного материала, а не из
-        частотного словаря вообще.
+        The learner reads them on every review but they have no card — so
+        neither forms nor translation were ever learned. It's a ready
+        "what to add" list, drawn from the learner's own material rather
+        than a general frequency dictionary.
 
-        Порядок — по числу встреч: чем чаще слово мозолит глаза, тем
-        обиднее, что оно не выучено.
+        Ordered by number of encounters: the more a word catches the eye,
+        the more annoying it is that it isn't learned.
 
-        Отбор идёт сверху и ровно до нужной страницы: разбор служебных
-        слов стоит вызова морфологии, а страниц человек листает две-три.
-        Отсюда же и ответ «есть ли ещё» — берём на одно слово больше.
+        Selection goes from the top and stops at the needed page: parsing
+        function words costs a morphology call, and the learner pages
+        through two or three. Hence the "is there more" answer — we take
+        one word extra.
 
-        Границы вправляем молча, и это не то же самое, что предел
-        палитры. Там срез прятал часть словаря навсегда, и о нём надо
-        было кричать; здесь следующая страница в одном вызове, а нижняя
-        строка и так говорит, что список не кончился. Молча пустой ответ
-        на limit=0 был бы куда хуже: он читается как «долгов нет».
+        Bounds are clamped silently, and that's not the same as the palette
+        limit. There a cut hid part of the vocabulary forever and had to be
+        shouted about; here the next page is one call away, and the bottom
+        line already says the list goes on. A silently empty answer on
+        limit=0 would be much worse: it reads as "no debt".
         """
         limit = max(1, min(limit, DEBT_PAGE_MAX))
         offset = max(0, offset)
         picked: list[tuple[str, int]] = []
         need = offset + limit + 1
         for lemma, n_notes in self.con.execute(
-            # Карточка вне области видимости — всё равно карточка: в ветке
-            # A1 у laps, koer и sõber она есть, и без этого условия
-            # инструмент уверял, что человек их никогда не учил.
+            # A card outside scope is still a card: in the A1 branch laps,
+            # koer and sõber have one, and without this condition the tool
+            # claimed the learner had never studied them.
             "select lemma, n_notes from lemma where n_word_notes = 0"
             " and lemma not in (select lemma from outside)"
             " and lemma not in (select lemma from debt_skip)"
@@ -780,11 +785,11 @@ _NUMBER_RE = re.compile(r"^\s*\d+[.)]?\s*")
 
 
 def topic_decks(con: sqlite3.Connection, topic: str) -> list[str]:
-    """Колоды темы — по имени уровня в пути, а не по подстроке.
+    """A topic's decks — by the path level's name, not by substring.
 
-    Подстрока 'Poes' цепляла заодно 14. Riidepoes и 16. Toidupoes. Тема с
-    номером ('12. Poes') должна совпасть с уровнем пути целиком, без
-    номера ('Poes') — с уровнем, у которого отрезан номер.
+    The substring 'Poes' also caught 14. Riidepoes and 16. Toidupoes. A
+    numbered topic ('12. Poes') must match a path level exactly; an
+    unnumbered one ('Poes') — a level with its number stripped.
     """
     want = topic.strip().lower()
     if not want:
@@ -802,8 +807,8 @@ def topic_decks(con: sqlite3.Connection, topic: str) -> list[str]:
 
 
 def topic_of(deck: str) -> str:
-    """Из пути колоды достаём тему: подколода 01/02/03 сама по себе
-    ('01. sõnad') ничего не говорит, решение принимается по теме."""
+    """Extract the topic from a deck path: the 01/02/03 subdeck by itself
+    ('01. sõnad') says nothing; decisions are made per topic."""
     parts = deck.split("::")
     if len(parts) > 1 and parts[-1] in SUBDECKS:
         parts.pop()
@@ -811,7 +816,7 @@ def topic_of(deck: str) -> str:
 
 
 def topic_state(con: sqlite3.Connection, topic: str) -> str:
-    """Заменяет связку list_decks + find_notes одним вызовом."""
+    """Replaces the list_decks + find_notes combo with a single call."""
     decks = topic_decks(con, topic)
     marks = ",".join("?" * len(decks))
     rows = con.execute(
@@ -833,9 +838,9 @@ def topic_state(con: sqlite3.Connection, topic: str) -> str:
     for sub in SUBDECKS:
         n = present.get(sub)
         lines.append(f"  {sub:18} {n if n is not None else '—'}")
-    # По леммам, а не по headword: в подколоде 02 каждая форма — своя
-    # заметка, и список из заголовков выдавал 'Alates' и 'alates', 'sall'
-    # и 'salli' как разные слова, втрое завышая счётчик темы.
+    # By lemma, not headword: in subdeck 02 each form is its own note, and a
+    # headword list gave 'Alates' and 'alates', 'sall' and 'salli' as
+    # different words, tripling the topic counter.
     heads = [
         h for (h,) in con.execute(
             "select distinct f.lemma from form f"
@@ -846,15 +851,15 @@ def topic_state(con: sqlite3.Connection, topic: str) -> str:
         )
     ]
     if heads:
-        # Полный список на большой теме — это под тысячу токенов.
-        # Для проверки конкретных слов есть vocab_check.
+        # The full list on a big topic is about a thousand tokens.
+        # vocab_check exists for checking specific words.
         shown = heads[:60]
         tail = f" … +{len(heads) - len(shown)} more" if len(heads) > len(shown) else ""
         lines.append(f"words ({len(heads)}): " + ", ".join(shown) + tail)
     return "\n".join(lines)
 
 
-# --- компактный вывод: экономия токенов — смысл всего проекта -----------
+# --- compact output: saving tokens is the whole point of the project ---
 
 
 def format_check(hits: list[Hit]) -> str:
@@ -865,8 +870,8 @@ def format_check(hits: list[Hit]) -> str:
             lines.append(f"{h.query:<{width}} ✗")
             continue
         if h.status == SEEN:
-            # Теги здесь чужие — той карточки, в пример которой слово
-            # попало, — поэтому вместо них число встреч и само предложение.
+            # The tags here belong to someone else — the card whose example
+            # the word appeared in — so show the hit count and the sentence instead.
             seen_in = f"  «{h.example}»" if h.example else ""
             known = "  · learner marked it known" if h.marked_known else ""
             lines.append(
@@ -877,9 +882,10 @@ def format_check(hits: list[Hit]) -> str:
         tags = ",".join(h.topics[:3])
         meta = " ".join(x for x in (h.level, tags) if x)
         forms = "/".join(h.forms[:4])
-        # Список тем — основа отчёта о дублях: по нему решают, настоящий
-        # это дубль или слово пришло из другой темы. Обрезаем ради токенов,
-        # но молча обрезать нельзя — 23% слов живут больше чем в двух темах.
+        # The topic list is the basis of the duplicate report: it decides
+        # whether it's a real duplicate or the word came from another topic.
+        # Cut for tokens, but never silently — 23% of words live in more
+        # than two topics.
         shown = "; ".join(h.decks[:2])
         extra = len(h.decks) - 2
         where = f"  [{shown}{f'; +{extra} more' if extra > 0 else ''}]" if h.decks else ""
@@ -936,26 +942,26 @@ def format_pool(p: Palette) -> str:
 
 
 def sentence_ok(pct: int, new: list[str], min_coverage: int = 70) -> bool:
-    """Мягкое правило: одно новое слово допустимо всегда, дальше смотрим
-    на покрытие. Жёсткий потолок «ровно одно новое» ломал предложения —
-    естественную фразу не всегда можно собрать из готового.
+    """Soft rule: one new word is always allowed, beyond that coverage
+    decides. A hard cap of "exactly one new" broke sentences — a natural
+    phrase can't always be assembled from what's known.
 
-    Отдельной функцией, потому что вердикт считают двое: отчёт наружу и
-    строка в логе. Продублированная формула разъехалась бы при первой
-    же правке, и лог начал бы врать про собственный ответ.
+    A separate function because two places compute the verdict: the report
+    and the log line. A duplicated formula would diverge on the first edit,
+    and the log would start lying about its own response.
     """
     return pct >= min_coverage or len(new) <= 1
 
 
 def format_repeats(repeats: list[Repeat], with_topic: bool) -> list[str]:
-    """Строки однообразия. Отдельной функцией — их печатают двое:
-    text_check на черновике и topic_write на записи.
+    """Monotony lines. A separate function — two places print them:
+    text_check on a draft and topic_write on write.
 
-    Строк две, и это не украшение. Первая — про эту пачку, её
-    переписывают. Вторая — про накопленный вес слова в теме, и она
-    сработает почти на каждом вызове зрелой темы; смешать их в одну
-    значило бы поставить рядом «перепиши» и «учти», а модель прочтёт
-    такой список как один шум и перестанет читать вовсе.
+    Two lines, and not for decoration. The first is about this batch — it
+    gets rewritten. The second is about the word's accumulated weight in
+    the topic, and it fires on almost every call in a mature topic; mixing
+    them would put "rewrite" next to "keep in mind", and the model would
+    read such a list as noise and stop reading it at all.
     """
     lines = []
     crowded = [r for r in repeats if r.crowded][:REPEAT_SHOWN]
@@ -1034,9 +1040,9 @@ def format_debt(page: DebtPage) -> str:
     ]
     width = max(len(i.word) for i in items)
     for n, item in enumerate(items, start=offset + 1):
-        # Теги тут не показываем: это теги чужой карточки, в примере
-        # которой слово попалось мимоходом, — про само слово они не
-        # говорят ничего, а строку удлиняют. Контекст даёт предложение.
+        # Tags aren't shown here: they're tags of another card whose example
+        # the word appeared in in passing — they say nothing about the word
+        # itself and only lengthen the line. The sentence gives the context.
         seen_in = f"  {item.example}" if item.example else ""
         lines.append(
             f"{n:>3}. {item.word:<{width}} {item.times:>4}×{seen_in}".rstrip()
@@ -1046,8 +1052,8 @@ def format_debt(page: DebtPage) -> str:
         if page.more
         else "— end of the list"
     )
-    # Про механизм отметок говорим в самой выдаче: без этого тот же
-    # десяток приезжает в каждом новом чате, и никто не догадается почему.
+    # Explain the marking mechanism in the output itself: otherwise the same
+    # dozen comes back in every new chat, and nobody will guess why.
     tail = "say vocab_debt_skip(words=[…]) for any the learner already knows"
     if page.skipped:
         tail += f" · {page.skipped} already marked known"

@@ -1,4 +1,4 @@
-"""Разворачивание слова в заметки. Anki для этих тестов не нужен."""
+"""Expanding a word into notes. No Anki needed for these tests."""
 from __future__ import annotations
 
 import pytest
@@ -63,9 +63,9 @@ def test_labels_by_pos_and_invariance():
         form_labels("существительное", ["jõgi", "jõe", "jõge", "jõgesid"])[3]
         == "4-я форма (партитив мн. ч.)"
     )
-    # Подписей ровно столько, сколько форм: глагол четвёртой не получает.
+    # Exactly as many labels as forms: a verb gets no fourth.
     assert len(form_labels("глагол", ["ujuma", "ujuda", "ujun"])) == 3
-    # Совпадающие формы у существительного — это ещё не неизменяемость.
+    # Identical forms on a noun don't yet mean invariance.
     assert form_labels("существительное", ["Arvuti", "arvuti", "arvutit"]) is not None
     assert form_labels("наречие", ["edasi", "edasi", "edasi"]) is None
 
@@ -93,8 +93,8 @@ def test_deck01_fields_match_model():
 
 
 def test_deck02_is_interleaved_word_by_word():
-    """Anki показывает новые карточки в порядке добавления: все формы
-    одного слова должны идти подряд."""
+    """Anki shows new cards in insertion order: all forms of one word
+    must come in a row."""
     (_, deck02, _), _ = build([JOGI, KOGU])
     answers = [n["fields"]["Answer"] for n in deck02.notes]
     assert answers == ["jõgi", "jõe", "jõge", "jõgesid", "kogu"]
@@ -111,7 +111,7 @@ def test_deck02_answers_are_lowercase_with_labels():
 
 
 def test_fourth_form_note_has_no_example():
-    """Пример к партитиву мн. ч. не сочиняем: форму спрашивают как есть."""
+    """No example is invented for the partitive plural: the form is asked as is."""
     (_, deck02, _), _ = build([JOGI])
     fourth = deck02.notes[3]["fields"]
     assert fourth["Answer"] == "jõgesid"
@@ -135,9 +135,9 @@ def test_verb_keeps_three_forms_and_an_empty_form4():
 
 
 def test_declinable_word_may_skip_the_fourth_form():
-    """У вещественных (vesi, jahu, mesi) партитива мн. ч. на практике
-    нет, и выдуманная форма хуже её отсутствия: три формы принимаем,
-    Form4 уезжает пустой, колода 02 получает три заметки."""
+    """Mass nouns (vesi, jahu, mesi) have no partitive plural in practice,
+    and an invented form is worse than none: three forms are accepted,
+    Form4 goes empty, deck 02 gets three notes."""
     (deck01, deck02, _), _ = build([{**JOGI, "forms": ["Jõgi", "jõe", "jõge"]}])
     assert deck01.notes[0]["fields"]["Form3"] == "jõge"
     assert deck01.notes[0]["fields"]["Form4"] == ""
@@ -214,9 +214,9 @@ def test_form_not_in_example_warns_but_does_not_block():
 
     batches, warnings = build([{**JOGI, "forms": ["Jõgi", "jõe", "kala", "jõgesid"]}],
                               form_in_example=contains)
-    assert len(batches[0].notes) == 1  # записи не мешает
+    assert len(batches[0].notes) == 1  # doesn't block the write
     assert len(warnings) == 1 and "form 3" in warnings[0]
-    # Четвёртую форму не проверяем: примера у неё нет.
+    # The fourth form isn't checked: it has no example.
     assert len(seen) == 3
 
 
@@ -226,12 +226,12 @@ def test_dry_run_touches_no_network():
     assert "01. sõnad" in out
 
 
-# --- доза новых слов колоды 03 ---------------------------------------------
+# --- deck-03 new-word dose ------------------------------------------------
 
 
 def fake_novel(new_by_sentence: dict[str, tuple[list[str], list[str]]]):
-    """Подставной разбор: тесты дозы про арифметику и отчёт, а не про
-    морфологию — Vabamorf сюда тянуть незачем."""
+    """A fake parser: dose tests are about arithmetic and the report, not
+    morphology — no need to pull Vabamorf in."""
 
     def find(sentence, taught):
         return new_by_sentence.get(sentence, ([], []))
@@ -258,11 +258,11 @@ def test_expected_dose_scales_with_topic_size_and_stops_at_the_cap():
     from anki_vocab.write import expected_dose
 
     assert expected_dose(0) == 0
-    assert expected_dose(1) == 0      # одно слово — ещё не повод для нового
+    assert expected_dose(1) == 0      # one word is no reason for a new one yet
     assert expected_dose(2) == 0
     assert expected_dose(3) == 1
     assert expected_dose(9) == 3
-    assert expected_dose(30) == 5     # потолок NEW_MAX
+    assert expected_dose(30) == 5     # the NEW_MAX cap
 
 
 def test_dose_collects_new_words_and_marks_a_shortfall():
@@ -273,10 +273,10 @@ def test_dose_collects_new_words_and_marks_a_shortfall():
 
 
 def test_dose_spans_calls_of_one_topic_filling():
-    """Пять вызовов по слову раньше требовали пять новых слов — теперь
-    они складываются в одну тему из пяти слов: одно новое на всех."""
+    """Five one-word calls used to demand five new words — now they add
+    up to one five-word topic: one new word for all."""
     novel = {JOGI["sentence"][0]: (["keefir"], [])}
-    assert dose_of([JOGI], novel).over, "одно слово — новое уже перебор"
+    assert dose_of([JOGI], novel).over, "one word — a new one is already too many"
     third = dose_of([JOGI], novel, history=(2, []))
     assert not third.over and not third.short
     fourth = dose_of([JOGI], novel, history=(3, ["keefir"]))
@@ -284,7 +284,7 @@ def test_dose_spans_calls_of_one_topic_filling():
 
 
 def test_cap_is_per_filling_not_per_call():
-    """Тема, разбитая на пачки, получала потолок NEW_MAX на каждую."""
+    """A topic split into batches got a NEW_MAX cap for each."""
     placed = ["a", "b", "c", "d", "e"]
     dose = dose_of([JOGI], {JOGI["sentence"][0]: (["f"], [])}, history=(40, placed))
     assert dose.expected_total == 5 and dose.over
@@ -356,12 +356,12 @@ def test_dose_does_not_count_the_same_word_twice():
     assert dose.new == ["ümbrik"]
 
 
-# --- однообразие ----------------------------------------------------------
+# --- monotony -------------------------------------------------------------
 
 
 def test_repeat_check_sees_every_sentence_of_the_topic():
-    """Считать надо и примеры колоды 01, и предложения колоды 03 —
-    однообразие живёт в обеих."""
+    """Both deck-01 examples and deck-03 sentences must be counted —
+    monotony lives in both."""
     seen: dict = {}
 
     def spy(sentences, taught):
@@ -374,8 +374,8 @@ def test_repeat_check_sees_every_sentence_of_the_topic():
 
 
 def test_repeat_check_counts_an_invariant_example_once():
-    """У несклоняемого слова один пример размножен на три слота — иначе
-    каждое его слово выглядело бы троекратным повтором."""
+    """An invariant word has one example copied into three slots — otherwise
+    each of its words would look like a triple repeat."""
     seen: list = []
     write_topic(COURSE, TOPIC, [KOGU],
                 repeat_check=lambda s, t: seen.extend(s) or [], dry_run=True)

@@ -1,11 +1,11 @@
-"""Журнал вызовов: одна JSON-строка на вызов инструмента, целиком.
+"""Call journal: one JSON line per tool call, in full.
 
-server.log пишется для глаз и режет аргументы до 90 символов — по нему
-видно, что вызов был, но не видно, какие предложения проверялись и что
-ушло в колоду. Разбирая сессию через неделю, их приходилось вытаскивать
-из индекса и угадывать. Здесь лежит всё, и это читается скриптом.
+server.log is written for human eyes and cuts arguments at 90 chars — it
+shows that a call happened, but not which sentences were checked or what
+went into the deck. Reviewing a session a week later meant digging them
+out of the index and guessing. Everything is here, readable by a script.
 
-Пустой ANKI_VOCAB_JOURNAL выключает журнал (так делают тесты).
+An empty ANKI_VOCAB_JOURNAL disables the journal (the tests do this).
 """
 from __future__ import annotations
 
@@ -18,8 +18,8 @@ from pathlib import Path
 
 from .config import DATA_DIR
 
-# Ответ режем: палитра vocab_pool — это 9k символов, и в журнале она
-# не нужна целиком. Аргументы не режем — ради них журнал и заведён.
+# The response is truncated: the vocab_pool palette is 9k chars and isn't
+# needed in full in the journal. Arguments aren't — they're why the journal exists.
 RESULT_MAX = 8000
 
 _log = logging.getLogger("anki_vocab.journal")

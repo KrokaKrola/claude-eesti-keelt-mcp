@@ -1,8 +1,8 @@
-"""Лемматизация через Vabamorf с кэшем в индексе.
+"""Lemmatization via Vabamorf with a cache in the index.
 
-Строковые эвристики тут не работают: эстонский меняет ступень внутри
-основы (kleit → kleidi → kleiti, aeg → aja → aega), так что префиксное
-сравнение ломается. Нужен настоящий морфоанализатор.
+String heuristics don't work here: Estonian changes the stem grade
+(kleit → kleidi → kleiti, aeg → aja → aega), so prefix comparison
+breaks. A real morphological analyzer is needed.
 """
 from __future__ import annotations
 
@@ -14,7 +14,7 @@ from estnltk.vabamorf.morf import Vabamorf
 
 _MARKERS_RE = re.compile(r"[_=+]")
 
-# Русские теги частей речи из карточек → коды Vabamorf, для снятия омонимии.
+# Russian part-of-speech tags from cards → Vabamorf codes, for disambiguation.
 POS_CODES = {
     "существительное": {"S", "H"},
     "глагол": {"V"},
@@ -28,11 +28,11 @@ POS_CODES = {
 }
 
 
-# Сравнительная степень, которую по основе не восстановить.
+# Comparatives that can't be restored from the stem.
 _SUPPLETIVE = {"parem": "hea", "parim": "hea"}
 
-# Разборы, которые не равны самостоятельному слову: наречие или
-# послелог, застывший из падежной формы ('jalga', 'lukku', 'samas').
+# Analyses that aren't a standalone word: an adverb or postposition
+# frozen from a case form ('jalga', 'lukku', 'samas').
 _FROZEN = {"D", "K"}
 
 Analyses = tuple[tuple[str, str], ...]
@@ -42,7 +42,7 @@ class Lemmatizer:
     def __init__(self, con: sqlite3.Connection):
         self.con = con
         self.vm = Vabamorf.instance()
-        # слово → (основной разбор, все разборы, есть ли слово в словаре)
+        # word → (primary analysis, all analyses, whether the dictionary knows it)
         self.mem: dict[str, tuple[Analyses, Analyses, bool]] = {}
         self.positives: dict[str, str] = {}
         self.hits = 0
@@ -74,14 +74,14 @@ class Lemmatizer:
         return tuple(pair for entry in raw for pair in self._pairs(entry))
 
     def positive(self, comparative: str) -> str:
-        """Сравнительная степень → исходное прилагательное.
+        """Comparative → base adjective.
 
-        Vabamorf считает 'olulisem' отдельной леммой, и в отчётах
-        сравнительная степень знакомого слова выходила новым словом.
-        Сравнительная степень строится от основы генитива плюс -m
-        (suure-m, olulise-m, tervisliku-m), иногда с a → e (pika → pikem,
-        sooja → soojem): отрезаем -m и проверяем, что остаток — генитив
-        прилагательного. Не вышло — оставляем как есть.
+        Vabamorf treats 'olulisem' as a lemma of its own, and in reports the
+        comparative of a known word came out as a new word. A comparative
+        is the genitive stem plus -m (suure-m, olulise-m, tervisliku-m),
+        sometimes with a → e (pika → pikem, sooja → soojem): strip the -m
+        and check that the rest is an adjective's genitive. If not, keep
+        the word as is.
         """
         if comparative in _SUPPLETIVE:
             return _SUPPLETIVE[comparative]
@@ -133,10 +133,10 @@ class Lemmatizer:
         primary = self._read(word, True) or ((key, ""),)
         result = (primary, self._read(word, False), self._in_dictionary(key))
         self.mem[key] = result
-        # Кэш — только ускорение. Запись делаем по возможности: индекс
-        # может быть заблокирован другим процессом (сборка из CLI, второй
-        # сервер), и ронять из-за этого чтение нельзя. В памяти разбор
-        # всё равно останется до конца работы процесса.
+        # The cache is only a speedup. Writing is best-effort: the index
+        # may be locked by another process (a CLI build, a second server),
+        # and reads must not fail because of it. The analysis stays in
+        # memory until the process exits anyway.
         try:
             self.con.execute(
                 "insert or replace into lemma_cache(word, analyses) values (?, ?)",
@@ -147,35 +147,36 @@ class Lemmatizer:
         return result
 
     def analyses(self, word: str) -> tuple[tuple[str, str], ...]:
-        """[(лемма, код части речи), ...] со снятой омонимией — обычно
-        один разбор, и в большинстве случаев верный."""
+        """[(lemma, POS code), ...] after disambiguation — usually one
+        analysis, and correct in most cases."""
         return self._cached(word)[0]
 
     def variants(self, word: str) -> tuple[tuple[str, str], ...]:
-        """Все разборы, без снятия омонимии. Слова сюда приходят по
-        одному, вне контекста, и снятие омонимии тогда просто выбирает
-        частотный вариант: 'salli' становится глаголом sallima, хотя на
-        карточке это шарф. Полный список нужен, чтобы тег части речи с
-        карточки было из чего выбрать."""
+        """All analyses, without disambiguation. Words arrive here one at a
+        time, without context, so disambiguation just picks the frequent
+        reading: 'salli' becomes the verb sallima, while on the card it's a
+        scarf. The full list is needed so the card's POS tag has something
+        to choose from."""
         return self._cached(word)[1]
 
     def in_dictionary(self, word: str) -> bool:
-        """Знает ли слово сам словарь Vabamorf — без угадывания.
+        """Whether Vabamorf's own dictionary knows the word — no guessing.
 
-        Иначе опечатка неотличима от нового слова: 'söin' вместо 'sõin'
-        анализатор угадывает существительным, и в отчёте она выглядела
-        честным новым словом, а 'mureled' вместо 'murelid' даже ушло в
-        дозу. Сложные слова словарь собирает сам: kaerahelbepuder он знает.
+        Otherwise a typo is indistinguishable from a new word: the analyzer
+        guesses 'söin' (for 'sõin') as a noun, and in the report it looked
+        like an honest new word, while 'mureled' (for 'murelid') even made
+        it into the dose. The dictionary assembles compounds itself: it
+        knows kaerahelbepuder.
         """
         return self._cached(word)[2]
 
     def sentence(self, tokens: list[str]) -> list[tuple[str, str]]:
-        """(лемма, код части речи) для каждого слова — в контексте фразы.
+        """(lemma, POS code) for each word — in the context of the phrase.
 
-        Слово по одному разбирается плохо: снятие омонимии тогда просто
-        берёт частотный разбор, и 'jalga' в «pani kingad jalga» выходило
-        наречием, а не ногой. Регистр сохраняем: только по нему видно,
-        что 'Lätist' — Латвия, а не неизвестное слово.
+        Words parse poorly one at a time: disambiguation then just takes the
+        frequent reading, and 'jalga' in «pani kingad jalga» came out as an
+        adverb, not "leg". Case is kept: only by it can you tell 'Lätist'
+        is Latvia and not an unknown word.
         """
         if not tokens:
             return []
@@ -191,23 +192,23 @@ class Lemmatizer:
         ]
 
     def is_name(self, word: str) -> bool:
-        """Собственное имя: все разборы — H (Tallinn, Eesti).
+        """Proper name: all analyses are H (Tallinn, Eesti).
 
-        Мимо кэша, и намеренно. Регистр здесь решает всё: 'tallinn' со
-        строчной буквы разбирается как обычное существительное. А кэш
-        ключуется по слову в нижнем регистре, так что ответ зависел бы
-        от того, в каком виде слово попалось анализатору первым.
+        Bypasses the cache on purpose. Case decides everything here:
+        lowercase 'tallinn' parses as a common noun. The cache is keyed
+        by the lowercased word, so the answer would depend on which form
+        the analyzer happened to see first.
 
-        Строгое «все разборы H» оставляет Mari и Jaan в словах: у них
-        рядом есть нарицательный разбор (mari — ягода). Так и надо —
-        пропустить чужое имя дешевле, чем спрятать настоящее слово.
+        Strict "all analyses H" keeps Mari and Jaan as words: they have a
+        common-noun reading nearby (mari — berry). That's intended —
+        missing someone's name is cheaper than hiding a real word.
         """
         codes = {code for _, code in self._read(word.capitalize(), False) if code}
         return bool(codes) and codes <= {"H"}
 
     def lemma(self, word: str, pos: str | None = None) -> str:
-        """Одна лемма. Тег части речи с карточки снимает омонимию:
-        сначала по основному разбору, потом по остальным вариантам."""
+        """A single lemma. The card's POS tag disambiguates: first among
+        the primary analyses, then among the other variants."""
         primary = self.analyses(word)
         if pos:
             codes = POS_CODES.get(pos, set())
@@ -217,19 +218,19 @@ class Lemmatizer:
         return primary[0][0]
 
     def lemmas(self, word: str) -> set[str]:
-        """Кандидаты для поиска слова в индексе.
+        """Candidates for looking a word up in the index.
 
-        Отброшенные омонимией разборы добавляем только к словоформам.
-        Если основной разбор говорит, что слово и так стоит в словарной
-        форме, ему верим: 'koli' — это хлам, и подхватив из вариантов
-        чужую лемму kolima (переезжать), мы выдали бы незнакомое слово
-        за знакомое. А вот 'salli' словарной формой не является, и
-        выбор между sall и sallima честно неоднозначен.
+        Analyses dropped by disambiguation are added only for inflected
+        forms. If the primary analysis says the word is already in its
+        dictionary form, we trust it: 'koli' is junk, and by picking the
+        foreign lemma kolima (to move house) from the variants we would
+        pass an unknown word off as known. 'salli', on the other hand, is
+        not a dictionary form, and sall vs. sallima is genuinely ambiguous.
 
-        Исключение — наречие или послелог, застывший из падежной формы:
-        'lukku' сам себе лемма, но это и иллатив от lukk. Поверив ему,
-        text_check считал 'lukku' новым словом рядом с целевым lukk.
-        Так же и с догадкой анализатора про незнакомое ему слово."""
+        The exception is an adverb or postposition frozen from a case form:
+        'lukku' is its own lemma, but also the illative of lukk. Trusting
+        it, text_check counted 'lukku' as a new word next to the target lukk.
+        Same for the analyzer's guess about a word it doesn't know."""
         key = word.strip().lower()
         primary = self.analyses(key)
         found = {lem for lem, _ in primary}

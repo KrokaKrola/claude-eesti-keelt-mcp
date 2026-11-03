@@ -1,18 +1,18 @@
-"""Запись карточек в Anki через аддон Anki MCP Server.
+"""Writing cards to Anki via the Anki MCP Server add-on.
 
-Своей SQLite в живую коллекцию не пишем никогда — почему, подробно
-написано в collection.py. Пишет Anki, мы только доносим до него готовые
-заметки по HTTP на localhost.
+We never write to the live collection with our own SQLite — collection.py
+explains why in detail. Anki writes; we only deliver ready notes to it
+over HTTP on localhost.
 
-Модуль делится надвое:
+The module has two halves:
 
-  * ``build_topic`` разворачивает слово в заметки трёх подколод темы —
-    чистые функции без сети, их и проверяют тесты;
-  * ``call`` и ``write_topic`` разговаривают с аддоном.
+  * ``build_topic`` expands a word into notes for the topic's three
+    subdecks — pure functions with no network, which the tests cover;
+  * ``call`` and ``write_topic`` talk to the add-on.
 
-Раскладка слова по заметкам раньше жила в голове модели: она читала
-таблицу подписей из скилла и переписывала её руками в 45 заметок. Здесь
-у неё нет выбора, а значит нет и способа ошибиться.
+The word-to-notes layout used to live in the model's head: it read the
+label table from the skill and copied it by hand into 45 notes. Here
+it has no choice, and so no way to get it wrong.
 """
 from __future__ import annotations
 
@@ -31,9 +31,8 @@ SUBDECKS = ("01. sõnad", "02. sõnad typein", "03. lause typein")
 MODEL_WORD = "Estonian 3 Forms"
 MODEL_TYPEIN = "Estonian Word Forms with TypeIn"
 
-# Аддон режет пачку на 100 заметок; на слово приходится до четырёх
-# заметок колоды 02 — по одной на форму, — она и упирается в потолок
-# первой.
+# The add-on caps a batch at 100 notes; a word takes up to four deck-02
+# notes — one per form — so that deck hits the cap first.
 MAX_NOTES_PER_BATCH = 100
 NOTES_PER_WORD_02 = 4
 MAX_WORDS = MAX_NOTES_PER_BATCH // NOTES_PER_WORD_02
@@ -50,52 +49,52 @@ VERB_LABELS = (
     "3-я форма (mina-vorm)",
 )
 
-# Склоняются как существительное — и только у них бывает четвёртая форма,
-# партитив множественного числа. Остальное либо спрягается (глагол) и
-# обходится тремя, либо не меняется вовсе и подписи форм не получает.
-# Четвёртая форма у склоняемого слова необязательна: у вещественных
-# (vesi, jahu, mesi, sool, või) партитив мн. ч. на практике не
-# употребляется, и выдуманная форма хуже её отсутствия — три формы
-# принимаем как есть, Form4 уезжает в Anki пустой, а колода 02 получает
-# на слово три заметки вместо четырёх.
+# These decline like nouns — and only they can have a fourth form, the
+# partitive plural. Everything else either conjugates (verb) and gets by
+# with three, or doesn't change at all and gets no form labels.
+# The fourth form of a declinable word is optional: for mass nouns
+# (vesi, jahu, mesi, sool, või) the partitive plural isn't used in
+# practice, and an invented form is worse than none — three forms are
+# accepted as is, Form4 goes to Anki empty, and deck 02 gets three notes
+# for the word instead of four.
 NOUN_LIKE = {"существительное", "прилагательное", "местоимение", "числительное"}
 
 FORMS_RULE = (
-    "4 non-empty forms for a declinable word (номинатив, генитив, партитив, "
-    "партитив мн. ч.) — 3 if the partitive plural is not used in practice "
-    "(вещественное: vesi, jahu, mesi), 3 for a verb, 1 for an invariant word"
+    "4 non-empty forms for a declinable word (nominative, genitive, partitive, "
+    "partitive plural) — 3 if the partitive plural is not used in practice "
+    "(mass noun: vesi, jahu, mesi), 3 for a verb, 1 for an invariant word"
 )
 
 
 @dataclasses.dataclass
 class Dose:
-    """Сколько нового реально уехало в предложения колоды 03.
+    """How much new vocabulary actually went into deck-03 sentences.
 
-    Единственное место, где дозу вообще видно. text_check её посчитать
-    не может: он получает плоский список предложений и не знает, какие
-    из них колоды 03, — а доза живёт только там.
+    The only place the dose is visible at all. text_check can't compute
+    it: it gets a flat list of sentences and doesn't know which belong to
+    deck 03 — and the dose lives only there.
     """
 
-    # Считали ли дозу вообще: без закрытия из server.py (тесты, чистая
-    # сборка заметок) пустой список новых слов означает «не смотрели», а
-    # не «модель ничего не положила».
+    # Whether the dose was computed at all: without the closure from server.py
+    # (tests, plain note building) an empty new-word list means "didn't look",
+    # not "the model added nothing".
     counted: bool = False
     words: int = 0
-    # Ожидание на всё заполнение темы, включая прошлые вызовы окна.
+    # Expectation for the whole topic fill, including earlier calls in the window.
     expected_total: int = 0
-    # Что ушло в тему раньше за окно DOSE_WINDOW_HOURS.
+    # What went into the topic earlier within DOSE_WINDOW_HOURS.
     prior_words: int = 0
     prior_new: list[str] = dataclasses.field(default_factory=list)
     new: list[str] = dataclasses.field(default_factory=list)
     half: list[str] = dataclasses.field(default_factory=list)
-    # Предложения с двумя новыми словами разом: два неизвестных в фразе,
-    # которую человек переводит сам, — ровно та трудность, которой доза
-    # и старается избежать.
+    # Sentences with two new words at once: two unknowns in a phrase the
+    # learner translates on their own — exactly the difficulty the dose is
+    # meant to avoid.
     crowded: list[str] = dataclasses.field(default_factory=list)
 
     @property
     def expected(self) -> int:
-        """Сколько ещё ждём от этого вызова."""
+        """How many more we expect from this call."""
         return max(0, self.expected_total - len(self.prior_new))
 
     @property
@@ -110,25 +109,25 @@ class Dose:
 
 
 def expected_dose(n_words: int) -> int:
-    """Сколько новых слов ждём от заполнения темы в n_words слов.
+    """How many new words to expect from filling a topic of n_words words.
 
-    Без нижнего порога: прежний max(1, …) требовал новое слово от вызова
-    на одно слово — втрое чаще задуманного, и 01.10 из этого вышла
-    цепочка jogurt → keefir → kohupiim → pannkook → uba, где каждое
-    новое слово тянуло за собой следующее.
+    No lower bound: the old max(1, …) demanded a new word from a one-word
+    call — three times more often than intended, and on 01.10 it produced
+    the chain jogurt → keefir → kohupiim → pannkook → uba, where each new
+    word pulled in the next.
     """
     return min(n_words // NEW_EVERY, NEW_MAX)
 
 
 class AnkiError(RuntimeError):
-    """Аддон недоступен или отказался выполнять запрос."""
+    """The add-on is unavailable or refused the request."""
 
 
 class NoteDataError(ValueError):
-    """Данные слов не прошли проверку.
+    """Word data failed validation.
 
-    Собираем все претензии разом: по одной модель чинит их кругами,
-    каждый раз заново сочиняя весь список.
+    Collect all complaints at once: one at a time, the model fixes them in
+    circles, rewriting the whole list each time.
     """
 
     def __init__(self, problems: list[str]):
@@ -137,13 +136,13 @@ class NoteDataError(ValueError):
 
 
 # --------------------------------------------------------------------------
-# Разворачивание слова в заметки
+# Expanding a word into notes
 # --------------------------------------------------------------------------
 
 
 @dataclasses.dataclass
 class Batch:
-    """Одна подколода: что за модель и какие заметки в неё кладём."""
+    """One subdeck: which model and which notes go into it."""
 
     deck: str
     model: str
@@ -153,28 +152,27 @@ class Batch:
 def topic_words(topic: str) -> list[str]:
     """'09. Vaba aeg' → ['aeg', 'vaba'].
 
-    Номер отрезаем, слова опускаем в нижний регистр и сортируем: именно
-    по этим тегам потом ищет vocab_pool, и порядок должен быть один и
-    тот же у всех тем.
+    Strip the number, lowercase the words and sort them: vocab_pool later
+    searches by these tags, and the order must be the same across all
+    topics.
     """
     bare = re.sub(r"^\s*\d+[.)]?\s*", "", topic.strip())
     return sorted({w.lower() for w in re.findall(r"[^\W\d_]+", bare, re.UNICODE)})
 
 
 def level_tag(course: str) -> str | None:
-    """'kursuse eesti keel::A2' → 'A2'. Не угадали — тега уровня не будет."""
+    """'kursuse eesti keel::A2' → 'A2'. No match — no level tag."""
     tail = course.split("::")[-1].strip()
     return tail.upper() if re.fullmatch(r"[ABC][12]", tail, re.IGNORECASE) else None
 
 
 def form_labels(pos: str, forms: list[str]) -> tuple[str, ...] | None:
-    """Подписи форм — трёх, а у склоняемого слова четырёх. None — слово
-    неизменяемое.
+    """Form labels — three, or four for a declinable word. None means the
+    word is invariant.
 
-    Неизменяемость определяем по самим формам, а не по части речи:
-    наречие с тремя одинаковыми формами и местоимение вроде 'kogu'
-    ведут себя одинаково, а спрашивать об этом модель — лишний повод
-    ошибиться.
+    Invariance is judged by the forms themselves, not by POS: an adverb
+    with three identical forms and a pronoun like 'kogu' behave the same,
+    and asking the model about it is one more chance to get it wrong.
     """
     if len({f.strip().lower() for f in forms}) == 1:
         return None
@@ -191,7 +189,7 @@ def _pair(value: Any) -> tuple[str, str] | None:
 
 
 def _validate(word: dict, seen: set[str], where: str, problems: list[str]) -> dict | None:
-    """Проверяет одно слово. Возвращает нормализованный вид или None."""
+    """Validate one word. Returns the normalized form or None."""
     before = len(problems)
 
     et = str(word.get("word", "")).strip()
@@ -223,16 +221,16 @@ def _validate(word: dict, seen: set[str], where: str, problems: list[str]) -> di
         forms = []
     else:
         forms = [str(f).strip() for f in forms]
-        # Неизменяемость видно по самим формам, а не по части речи:
-        # 'kogu' помечен местоимением, но партитива мн. ч. у него нет.
+        # Invariance shows in the forms, not the POS: 'kogu' is tagged as a
+        # pronoun but has no partitive plural.
         invariant = len({f.lower() for f in forms}) == 1
         declinable = pos in NOUN_LIKE and not invariant
         if len(forms) == 1:
             forms = forms * 3
         elif len(forms) == 4 and not declinable:
             problems.append(
-                f"{where} ({et}): forms — got 4, but the 4th form (партитив "
-                "мн. ч.) belongs to a declinable word only; a verb takes 3"
+                f"{where} ({et}): forms — got 4, but the 4th form (partitive "
+                "plural) belongs to a declinable word only; a verb takes 3"
             )
             forms = []
         elif len(forms) not in (3, 4):
@@ -269,11 +267,11 @@ def build_topic(
     dose_history: tuple[int, list[str]] = (0, []),
     form_check: Callable[[list[dict]], tuple[list[str], list[str]]] | None = None,
 ) -> tuple[list[Batch], list[str], Dose]:
-    """Слова → три пачки заметок, предупреждения и отчёт о дозе.
+    """Words → three note batches, warnings and a dose report.
 
-    Предупреждение — не отказ: 4% словарных карточек в коллекции уже
-    нарушают правило «пример содержит форму» вполне законно (у глагола
-    'algama' пример идёт с 'algab'), так что блокировать по нему нельзя.
+    A warning is not a rejection: 4% of dictionary cards in the collection
+    already break the "example contains the form" rule quite legitimately
+    (the verb 'algama' has an example with 'algab'), so it can't block.
     """
     if not words:
         raise NoteDataError(["words list is empty"])
@@ -297,8 +295,8 @@ def build_topic(
 
     warnings: list[str] = []
     if form_check is not None:
-        # Формы против словаря — до записи и с отказом: неверная форма на
-        # карточке заучивается, и исправлять её потом приходится в памяти.
+        # Forms against the dictionary — before writing, with rejection: a
+        # wrong form on a card gets memorized and then has to be fixed in memory.
         wrong, unsure = form_check(clean)
         if wrong:
             raise NoteDataError(wrong)
@@ -314,8 +312,8 @@ def build_topic(
         prior_words=prior_words,
         prior_new=list(prior_new),
     )
-    # Слова самой темы новыми не считаются: их сейчас и учат. Лемму из
-    # них делает вызывающий — здесь про морфологию ничего не знают.
+    # The topic's own words don't count as new: they're what's being taught.
+    # The caller lemmatizes them — this module knows nothing about morphology.
     taught = {w["word"].strip().lower() for w in clean}
 
     notes01: list[dict] = []
@@ -327,15 +325,15 @@ def build_topic(
         labels = form_labels(pos, forms)
 
         if form_in_example is not None:
-            # zip обрывается на трёх парах примеров: четвёртую форму
-            # проверять не на чем, примера у неё нет.
+            # zip stops at three example pairs: there's nothing to check the
+            # fourth form against, it has no example.
             for i, (form, (et, _)) in enumerate(zip(forms, ex), start=1):
                 if not form_in_example(form, et):
                     warnings.append(f"{w['word']}: form {i} ({form}) is absent from its example '{et}'")
 
-        # Form4 кладём всегда: у глагола и неизменяемого слова её нет, и
-        # поле должно уехать в Anki пустым, а не пропасть из заметки —
-        # шаблон показывает четвёртую форму только когда она заполнена.
+        # Form4 is always included: verbs and invariant words don't have it,
+        # and the field must reach Anki empty rather than vanish from the note —
+        # the template shows the fourth form only when it's filled.
         fields01 = {"Russian": w["ru"], "Add Reverse": "1", "Form4": ""}
         for i, form in enumerate(forms, start=1):
             fields01[f"Form{i}"] = form
@@ -344,10 +342,10 @@ def build_topic(
             fields01[f"Ex{i}ru"] = ru
         notes01.append({"fields": fields01, "tags": sorted({*shared, pos})})
 
-        # Одна заметка на форму, слово за словом: Anki показывает новые
-        # карточки в порядке добавления, и три формы должны попасться
-        # подряд, а не с разбросом в неделю.
-        # Четвёртая форма идёт без примера — её спрашивают как есть.
+        # One note per form, word by word: Anki shows new cards in the order
+        # they were added, and the three forms should come up together, not
+        # scattered over a week.
+        # The fourth form has no example — it's asked as is.
         slots = (
             [
                 (label, form, ex[i] if i < len(ex) else ("", ""))
@@ -395,13 +393,13 @@ def build_topic(
 
 
 # --------------------------------------------------------------------------
-# Разговор с аддоном
+# Talking to the add-on
 # --------------------------------------------------------------------------
 
 
 def endpoint() -> str:
-    """Адрес аддона берём из его же настроек: порт там меняется мышкой,
-    и хардкод разошёлся бы с реальностью молча."""
+    """The add-on's address comes from its own settings: the port can be
+    changed in its config, and a hardcoded one would silently diverge."""
     if url := os.environ.get("ANKI_MCP_URL"):
         return url
     host, port, path = "127.0.0.1", 3141, ""
@@ -416,7 +414,7 @@ def endpoint() -> str:
 
 
 def _unwrap(body: str) -> dict:
-    """Ответ приходит как SSE: 'event: message' и строка 'data: {...}'."""
+    """The response comes as SSE: 'event: message' and a 'data: {...}' line."""
     for line in body.splitlines():
         if line.startswith("data: "):
             return json.loads(line[6:])
@@ -424,9 +422,9 @@ def _unwrap(body: str) -> dict:
 
 
 def rpc(method: str, params: dict, timeout: float = 60.0) -> dict:
-    """Запрос к аддону по JSON-RPC. Ошибки переводим в понятную строку —
-    модель увидит её вместо стектрейса и сможет сказать пользователю,
-    что делать."""
+    """JSON-RPC request to the add-on. Errors become a readable string —
+    the model sees it instead of a traceback and can tell the user what
+    to do."""
     payload = json.dumps(
         {"jsonrpc": "2.0", "id": 1, "method": method, "params": params}
     ).encode()
@@ -454,13 +452,13 @@ def rpc(method: str, params: dict, timeout: float = 60.0) -> dict:
 
 
 def call(tool: str, args: dict, timeout: float = 60.0) -> dict:
-    """Вызов инструмента аддона."""
+    """Call an add-on tool."""
     result = rpc("tools/call", {"name": tool, "arguments": args}, timeout)
     if result.get("isError"):
         text = "".join(c.get("text", "") for c in result.get("content", []))
         raise AnkiError(f"{tool}: {text or 'add-on returned an error with no text'}")
-    # structuredContent и content дублируют друг друга — берём то, что
-    # уже разобрано, и лишнюю копию дальше не тащим.
+    # structuredContent and content duplicate each other — take the already
+    # parsed one and don't carry the extra copy further.
     if (structured := result.get("structuredContent")) is not None:
         return structured
     for chunk in result.get("content", []):
@@ -470,15 +468,15 @@ def call(tool: str, args: dict, timeout: float = 60.0) -> dict:
 
 
 def deck_names() -> set[str]:
-    """Все колоды Anki. Ответ большой, но он остаётся внутри сервера и
-    в контекст модели не попадает."""
+    """All Anki decks. The response is large, but it stays inside the
+    server and never reaches the model's context."""
     return {d["name"] for d in call("list_decks", {}).get("decks", [])}
 
 
 def _nearest_existing(deck: str, existing: set[str]) -> str:
-    """Ближайший существующий предок: create_deck аддона умеет только
-    два уровня, поэтому глубокую ветку приходится создавать переносом
-    карточек. Заметки временно ложатся сюда."""
+    """Nearest existing ancestor: the add-on's create_deck only handles two
+    levels, so a deep branch has to be created by moving cards. Notes land
+    here temporarily."""
     parts = deck.split("::")
     for i in range(len(parts) - 1, 0, -1):
         if (candidate := "::".join(parts[:i])) in existing:
@@ -492,9 +490,9 @@ def _card_ids(note_ids: list[int]) -> list[int]:
 
 
 def _add(batch: Batch, existing: set[str]) -> tuple[int, list[str]]:
-    """Кладёт пачку в свою подколоду, создавая её при необходимости.
+    """Put a batch into its subdeck, creating it if needed.
 
-    Возвращает число созданных заметок и список отказов от аддона.
+    Returns the number of notes created and the add-on's rejections.
     """
     if not batch.notes:
         return 0, []
@@ -506,8 +504,8 @@ def _add(batch: Batch, existing: set[str]) -> tuple[int, list[str]]:
         "deck_name": dest,
         "model_name": batch.model,
         "notes": batch.notes,
-        # Дубли отсеяны раньше через vocab_check; здесь флаг только
-        # мешает Anki зарубить три формы одного слова как повтор.
+        # Duplicates were filtered earlier via vocab_check; here the flag only
+        # gets in the way by making Anki reject three forms of one word.
         "allow_duplicate": True,
     })
 
@@ -519,14 +517,11 @@ def _add(batch: Batch, existing: set[str]) -> tuple[int, list[str]]:
     ]
 
     if not target_exists and created:
-        # change_deck создаёт путь любой глубины — это единственный
-        # способ получить четырёхуровневую колоду через аддон.
-        call("card_management", {
-            "params": {
-                "action": "change_deck",
-                "card_ids": _card_ids([r["note_id"] for r in created]),
-                "deck": batch.deck,
-            }
+        # card_change_deck creates a path of any depth — the only way to get
+        # a four-level deck through the add-on.
+        call("card_change_deck", {
+            "card_ids": _card_ids([r["note_id"] for r in created]),
+            "deck": batch.deck,
         })
         existing.add(batch.deck)
 
@@ -545,18 +540,18 @@ def write_topic(
     dose_history: tuple[int, list[str]] = (0, []),
     dry_run: bool = False,
 ) -> tuple[str, Dose]:
-    """Полный проход: проверить, разложить, создать колоды, записать.
+    """Full pass: validate, lay out, create decks, write.
 
-    Отчёт о дозе отдаём вторым значением, а не только строкой: вызывающий
-    пишет его в лог, иначе понять постфактум, соблюдалась доза или нет,
-    можно было бы только перечитывая ответы модели глазами.
+    The dose report is returned as a second value, not just as a string:
+    the caller logs it, otherwise telling after the fact whether the dose
+    was respected would mean rereading the model's replies by eye.
     """
     batches, warnings, dose = build_topic(
         course, topic, words, form_in_example, novel_words, dose_history, form_check
     )
-    # Считаем и здесь, а не только в text_check: тот проверяет черновик,
-    # и его могут не вызвать вовсе, — а сюда приходит ровно то, что
-    # ляжет в колоду.
+    # Counted here too, not only in text_check: that one checks a draft and
+    # may not be called at all — while this receives exactly what goes into
+    # the deck.
     repeats = repeat_check(*_sentences(batches)) if repeat_check else []
     typos = spell_check(*_sentences(batches)) if spell_check else []
 
@@ -584,8 +579,8 @@ def write_topic(
         try:
             created, rejected = _add(batch, existing)
         except AnkiError as exc:
-            # Дальше не идём: половина темы лучше, чем половина с дырой
-            # посередине, а Ctrl+Z в Anki снимает записанное целиком.
+            # Stop here: half a topic beats half with a hole in the middle,
+            # and Ctrl+Z in Anki undoes what was written as a whole.
             lines.append(f"  {name:<18} ERROR: {exc}")
             lines.append("  remaining decks untouched; Ctrl+Z in Anki undoes what was written")
             return "\n".join([f"{head} — {total} notes written, then failed"] + lines), dose
@@ -604,16 +599,16 @@ def write_topic(
 
 
 def _sentences(batches: list[Batch]) -> tuple[list[str], set[str]]:
-    """Все предложения пачки и слова, которым тема учит.
+    """All sentences of the batch and the words the topic teaches.
 
-    Целевые слова из счёта повторов надо вычесть: пример к слову обязан
-    его содержать, и без этого каждое слово темы выглядело бы повтором
-    ровно четыре раза.
+    Target words must be subtracted from the repeat count: an example for
+    a word must contain it, and without this every topic word would look
+    like a repeat exactly four times.
     """
     texts: list[str] = []
     for note in batches[0].notes:
-        # У несклоняемого слова один пример размножен на три слота —
-        # иначе каждое его слово выглядело бы троекратным повтором.
+        # An invariant word has one example copied into three slots —
+        # otherwise each of its words would look like a triple repeat.
         texts += dict.fromkeys(
             note["fields"][f"Ex{i}"] for i in (1, 2, 3) if note["fields"].get(f"Ex{i}")
         )
@@ -639,8 +634,8 @@ def _repeat_lines(repeats: list) -> list[str]:
 
 
 def _dose_lines(dose: Dose) -> list[str]:
-    """Строка дозы — не украшение отчёта, а единственный способ увидеть,
-    что предложения колоды 03 опять собрали целиком из известного."""
+    """The dose line isn't decoration — it's the only way to see that
+    deck-03 sentences were again built entirely from known words."""
     if not dose.counted:
         return []
     got = ", ".join(dose.new) if dose.new else "none"

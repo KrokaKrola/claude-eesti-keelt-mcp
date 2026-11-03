@@ -1,5 +1,5 @@
-"""Оглавление аддона и проброс вызовов. Anki для этих тестов не нужен:
-фикстура — сохранённый ответ tools/list из backup/."""
+"""Add-on table of contents and call passthrough. No Anki needed:
+the fixture is a saved tools/list response."""
 from __future__ import annotations
 
 import json
@@ -9,10 +9,7 @@ import pytest
 
 from anki_vocab import passthrough as pt
 
-FIXTURE = (
-    Path(__file__).resolve().parents[1]
-    / "backup/2026-09-02-before-mcp-slim/tools-list-before.json"
-)
+FIXTURE = Path(__file__).resolve().parent / "fixtures/addon-tools-list.json"
 
 
 @pytest.fixture
@@ -33,13 +30,13 @@ def test_names_are_sorted_and_plain(tools):
 
 
 def test_exact_name_wins_over_substring(tools):
-    """'sync' обязан отдать sync, а не всё, где встречается это слово."""
+    """'sync' must return sync, not everything that mentions the word."""
     assert [t["name"] for t in pt.match(tools, "sync")] == ["sync"]
 
 
 def test_keyword_search_looks_into_descriptions(tools):
-    """У инструмента может не быть слова в имени: 'scheduler' находит
-    get_due_cards, хотя в названии его нет."""
+    """A tool may lack the word in its name: 'scheduler' finds
+    get_due_cards even though its name doesn't contain it."""
     hits = {t["name"] for t in pt.match(tools, "scheduler")}
     assert "get_due_cards" in hits
 
@@ -52,15 +49,15 @@ def test_describe_returns_a_usable_schema(tools):
 
 
 def test_wide_pattern_lists_names_instead_of_dumping_schemas(tools):
-    """Ради этого всё и затевалось: широкий шаблон не должен вываливать
-    те самые 15 тысяч токенов обратно в контекст."""
+    """The whole point: a broad pattern must not dump those same
+    15k tokens back into the context."""
     out = pt.describe(tools, "a", "live")
     assert "narrow it down" in out
     assert "inputSchema" not in out
 
 
 def test_unknown_pattern_shows_what_is_available(tools):
-    out = pt.describe(tools, "нетакого", "live")
+    out = pt.describe(tools, "nosuchtool", "live")
     assert "no add-on tool matches" in out and "add_notes" in out
 
 
@@ -91,11 +88,11 @@ def test_addon_error_points_at_the_schema(tools, monkeypatch):
 
 
 def test_mutating_covers_the_write_tools(tools):
-    """Проброс должен отличать запись от чтения: запись мимо topic_write
-    — единственное, что потом не сходится в логе."""
+    """Passthrough must tell writes from reads: a write bypassing topic_write
+    is the only thing that later doesn't add up in the log."""
     names = {t["name"] for t in tools}
     for tool in ("add_notes", "update_note_fields", "delete_notes", "create_deck"):
-        assert tool in names, f"аддон больше не отдаёт {tool}"
+        assert tool in names, f"add-on no longer exposes {tool}"
         assert pt.mutating(tool)
     for tool in ("find_notes", "notes_info", "list_decks", "gui_browse"):
         assert tool in names
@@ -103,9 +100,9 @@ def test_mutating_covers_the_write_tools(tools):
 
 
 def test_multi_action_tools_are_writes_unless_they_only_read():
-    """card_management двигал и переставлял карточки, а лог молчал:
-    по префиксу имени он на запись не походил."""
+    """card_management moved and repositioned cards while the log stayed
+    silent: by name prefix it didn't look like a write."""
     assert pt.mutating("card_management", {"params": {"action": "change_deck"}})
     assert pt.mutating("tag_management", {"params": {"action": "replace_tags"}})
     assert not pt.mutating("tag_management", {"params": {"action": "get_tags"}})
-    assert pt.mutating("some_future_tool"), "неизвестное считаем записью"
+    assert pt.mutating("some_future_tool"), "unknown counts as a write"
